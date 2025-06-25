@@ -10,11 +10,13 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 app.use(cors());
-
+console.log('MONGODB_URI:', process.env.MONGODB_URI);
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 30000, // Default 30s, increase if needed
+  connectTimeoutMS: 60000, // Increase to 60s
 }).then(() => console.log('Connected to MongoDB'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
