@@ -42,7 +42,7 @@ const categorySchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
   is_selected: { type: Boolean, default: false },
 });
-const Category = mongoose.model('Category', categorySchema);
+const Category = mongoose.model("Category", categorySchema);
 
 const participantSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -191,27 +191,36 @@ app.get("/api/participants/:categoryId", authenticateJWT, async (req, res) => {
 });
 
 // New Delete Participant API
-app.delete('/api/participants/:categoryId/:participantId', authenticateJWT, async (req, res) => {
-  try {
-    const { categoryId, participantId } = req.params;
+app.delete(
+  "/api/participants/:categoryId/:participantId",
+  authenticateJWT,
+  async (req, res) => {
+    try {
+      const { categoryId, participantId } = req.params;
 
-    // Find and delete the participant
-    const participant = await Participant.findOneAndDelete({
-      _id: participantId,
-      category: categoryId,
-    });
+      // Find and delete the participant
+      const participant = await Participant.findOneAndDelete({
+        _id: participantId,
+        category: categoryId,
+      });
 
-    if (!participant) {
-      return sendResponse(res, 404, 'Participant not found in this category', null);
+      if (!participant) {
+        return sendResponse(
+          res,
+          404,
+          "Participant not found in this category",
+          null
+        );
+      }
+
+      // Optionally update the category (if needed), but not required here
+      sendResponse(res, 200, "Participant deleted successfully", participant);
+    } catch (err) {
+      console.error("Error deleting participant:", err.message);
+      sendResponse(res, 500, "Server error", null);
     }
-
-    // Optionally update the category (if needed), but not required here
-    sendResponse(res, 200, 'Participant deleted successfully', participant);
-  } catch (err) {
-    console.error('Error deleting participant:', err.message);
-    sendResponse(res, 500, 'Server error', null);
   }
-});
+);
 
 // Submit to Join (Public)
 app.post("/api/participants", async (req, res) => {
@@ -231,21 +240,32 @@ app.post("/api/participants", async (req, res) => {
 
     const participant = new Participant({ name, status, category: categoryId });
     await participant.save();
-    sendResponse(res, 201, "Oke, hẹn gặp bạn trên sân cầu nha!", participant);
+    let message;
+    if (status === "tham gia") {
+      message = "Oke, hẹn gặp bạn trên sân cầu nha!";
+    } else if (status === "lần sau") {
+      message = "Hẹn bạn lần sau nha!";
+    }
+    sendResponse(res, 201, message, participant);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
 });
 
 // Update Category API
-app.put('/api/categories/:id', authenticateJWT, async (req, res) => {
+app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, is_selected } = req.body;
 
     // Validate input
     if (is_selected === undefined && !name) {
-      return sendResponse(res, 400, 'At least one of name or is_selected is required', null);
+      return sendResponse(
+        res,
+        400,
+        "At least one of name or is_selected is required",
+        null
+      );
     }
 
     // Check if the connection supports transactions
@@ -257,7 +277,11 @@ app.put('/api/categories/:id', authenticateJWT, async (req, res) => {
 
       // If is_selected is true, set all other categories to false
       if (is_selected === true) {
-        await Category.updateMany({ _id: { $ne: id } }, { is_selected: false }, { session });
+        await Category.updateMany(
+          { _id: { $ne: id } },
+          { is_selected: false },
+          { session }
+        );
       }
 
       // Update the specific category
@@ -269,41 +293,53 @@ app.put('/api/categories/:id', authenticateJWT, async (req, res) => {
 
       if (!updatedCategory) {
         await session.abortTransaction();
-        return sendResponse(res, 404, 'Category not found', null);
+        return sendResponse(res, 404, "Category not found", null);
       }
 
       await session.commitTransaction();
       transactionSuccessful = true;
-      sendResponse(res, 200, 'Category updated successfully', updatedCategory);
+      sendResponse(res, 200, "Category updated successfully", updatedCategory);
     } catch (err) {
       await session.abortTransaction();
       // Fallback to non-transaction update if transaction fails
-      if (err.message.includes('Transaction numbers are only allowed')) {
-        console.warn('Transaction failed, falling back to non-transaction update:', err.message);
+      if (err.message.includes("Transaction numbers are only allowed")) {
+        console.warn(
+          "Transaction failed, falling back to non-transaction update:",
+          err.message
+        );
         const fallbackUpdate = await Category.findByIdAndUpdate(
           id,
           { name, is_selected: is_selected === true },
           { new: true, runValidators: true }
         );
-        if (!fallbackUpdate) return sendResponse(res, 404, 'Category not found', null);
+        if (!fallbackUpdate)
+          return sendResponse(res, 404, "Category not found", null);
         // Manually update others if is_selected is true (non-atomic)
         if (is_selected === true) {
-          await Category.updateMany({ _id: { $ne: id } }, { is_selected: false });
+          await Category.updateMany(
+            { _id: { $ne: id } },
+            { is_selected: false }
+          );
         }
-        return sendResponse(res, 200, 'Category updated successfully', fallbackUpdate);
+        return sendResponse(
+          res,
+          200,
+          "Category updated successfully",
+          fallbackUpdate
+        );
       }
       throw err;
     } finally {
       if (!transactionSuccessful) session.endSession();
     }
   } catch (err) {
-    console.error('Error updating category:', err.message);
-    sendResponse(res, 500, 'Server error', null);
+    console.error("Error updating category:", err.message);
+    sendResponse(res, 500, "Server error", null);
   }
 });
 
 // Delete Category API
-app.delete('/api/categories/:id', authenticateJWT, async (req, res) => {
+app.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -312,12 +348,13 @@ app.delete('/api/categories/:id', authenticateJWT, async (req, res) => {
 
     const deletedCategory = await Category.findByIdAndDelete(id);
 
-    if (!deletedCategory) return sendResponse(res, 404, 'Category not found', null);
+    if (!deletedCategory)
+      return sendResponse(res, 404, "Category not found", null);
 
-    sendResponse(res, 200, 'Category deleted successfully', deletedCategory);
+    sendResponse(res, 200, "Category deleted successfully", deletedCategory);
   } catch (err) {
-    console.error('Error deleting category:', err.message);
-    sendResponse(res, 500, 'Server error', null);
+    console.error("Error deleting category:", err.message);
+    sendResponse(res, 500, "Server error", null);
   }
 });
 
