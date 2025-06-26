@@ -40,8 +40,9 @@ const Admin = mongoose.model("Admin", adminSchema);
 
 const categorySchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
+  is_selected: { type: Boolean, default: false },
 });
-const Category = mongoose.model("Category", categorySchema);
+const Category = mongoose.model('Category', categorySchema);
 
 const participantSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -216,7 +217,7 @@ app.delete('/api/participants/:categoryId/:participantId', authenticateJWT, asyn
 app.post("/api/participants", async (req, res) => {
   const { name, status, categoryId } = req.body;
   if (!name || !status || !categoryId) {
-    return sendResponse(res, 400, "Name, status, and categoryId required");
+    return sendResponse(res, 400, "Nhập tên đi bạn eeiii!");
   }
   if (!["tham gia", "lần sau"].includes(status)) {
     return sendResponse(res, 400, "Invalid status");
@@ -225,14 +226,98 @@ app.post("/api/participants", async (req, res) => {
   try {
     const category = await Category.findById(categoryId);
     if (!category) {
-      return sendResponse(res, 400, "Invalid category");
+      return sendResponse(res, 400, "Ngày này không có đánh cầu nha!");
     }
 
     const participant = new Participant({ name, status, category: categoryId });
     await participant.save();
-    sendResponse(res, 201, "Participant registered successfully", participant);
+    sendResponse(res, 201, "Oke, hẹn gặp bạn trên sân cầu nha!", participant);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
+  }
+});
+
+// Update Category API
+app.put('/api/categories/:id', authenticateJWT, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, is_selected } = req.body;
+
+    // Validate input
+    if (is_selected === undefined && !name) {
+      return sendResponse(res, 400, 'At least one of name or is_selected is required', null);
+    }
+
+    // Check if the connection supports transactions
+    const session = await mongoose.startSession();
+    let transactionSuccessful = false;
+
+    try {
+      session.startTransaction();
+
+      // If is_selected is true, set all other categories to false
+      if (is_selected === true) {
+        await Category.updateMany({ _id: { $ne: id } }, { is_selected: false }, { session });
+      }
+
+      // Update the specific category
+      const updatedCategory = await Category.findByIdAndUpdate(
+        id,
+        { name, is_selected: is_selected === true },
+        { new: true, runValidators: true, session }
+      );
+
+      if (!updatedCategory) {
+        await session.abortTransaction();
+        return sendResponse(res, 404, 'Category not found', null);
+      }
+
+      await session.commitTransaction();
+      transactionSuccessful = true;
+      sendResponse(res, 200, 'Category updated successfully', updatedCategory);
+    } catch (err) {
+      await session.abortTransaction();
+      // Fallback to non-transaction update if transaction fails
+      if (err.message.includes('Transaction numbers are only allowed')) {
+        console.warn('Transaction failed, falling back to non-transaction update:', err.message);
+        const fallbackUpdate = await Category.findByIdAndUpdate(
+          id,
+          { name, is_selected: is_selected === true },
+          { new: true, runValidators: true }
+        );
+        if (!fallbackUpdate) return sendResponse(res, 404, 'Category not found', null);
+        // Manually update others if is_selected is true (non-atomic)
+        if (is_selected === true) {
+          await Category.updateMany({ _id: { $ne: id } }, { is_selected: false });
+        }
+        return sendResponse(res, 200, 'Category updated successfully', fallbackUpdate);
+      }
+      throw err;
+    } finally {
+      if (!transactionSuccessful) session.endSession();
+    }
+  } catch (err) {
+    console.error('Error updating category:', err.message);
+    sendResponse(res, 500, 'Server error', null);
+  }
+});
+
+// Delete Category API
+app.delete('/api/categories/:id', authenticateJWT, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Optionally delete associated participants
+    await Participant.deleteMany({ category: id });
+
+    const deletedCategory = await Category.findByIdAndDelete(id);
+
+    if (!deletedCategory) return sendResponse(res, 404, 'Category not found', null);
+
+    sendResponse(res, 200, 'Category deleted successfully', deletedCategory);
+  } catch (err) {
+    console.error('Error deleting category:', err.message);
+    sendResponse(res, 500, 'Server error', null);
   }
 });
 
