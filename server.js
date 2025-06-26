@@ -187,13 +187,17 @@ app.post("/api/categories", authenticateJWT, async (req, res) => {
 app.get("/api/participants/:categoryId", authenticateJWT, async (req, res) => {
   const { categoryId } = req.params;
   try {
+    const category = Category.findById(categoryId);
+    if (!category) {
+      return sendResponse(res, 404, "Category not found", null);
+    }
     const participants = await Participant.find({
       category: categoryId,
     }).populate("category");
     if (!participants.length) {
       return sendResponse(
         res,
-        404,
+        200,
         "No participants found for this category",
         []
       );
@@ -211,7 +215,10 @@ app.delete(
   async (req, res) => {
     try {
       const { categoryId, participantId } = req.params;
-
+      const category = Category.findById(categoryId);
+      if (!category) {
+        return sendResponse(res, 404, "Category not found", null);
+      }
       // Find and delete the participant
       const participant = await Participant.findOneAndDelete({
         _id: participantId,
@@ -373,7 +380,7 @@ app.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
 });
 
 // Logout API
-app.post('/api/admin/logout', authenticateJWT, (req, res) => {
+app.post("/api/admin/logout", authenticateJWT, (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
   // Decode token to get expiration
@@ -385,9 +392,10 @@ app.post('/api/admin/logout', authenticateJWT, (req, res) => {
 
   // Blacklist the token
   const blacklistedToken = new BlacklistedToken({ token, expiresAt });
-  blacklistedToken.save()
+  blacklistedToken
+    .save()
     .then(() => sendResponse(res, 200, "Logout successful"))
-    .catch(err => sendResponse(res, 500, "Failed to blacklist token"));
+    .catch((err) => sendResponse(res, 500, "Failed to blacklist token"));
 });
 
 // Start Server
