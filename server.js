@@ -289,6 +289,23 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
       );
     }
 
+    // Check for duplicate name if name is being updated
+    if (name) {
+      const existingCategory = await Category.findOne({ 
+        name: name.trim(), 
+        _id: { $ne: id } 
+      });
+      
+      if (existingCategory) {
+        return sendResponse(
+          res,
+          400,
+          "Category name already exists",
+          null
+        );
+      }
+    }
+
     // Check if the connection supports transactions
     const session = await mongoose.startSession();
     let transactionSuccessful = false;
