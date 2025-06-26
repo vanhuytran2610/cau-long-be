@@ -55,6 +55,16 @@ const participantSchema = new mongoose.Schema({
 });
 const Participant = mongoose.model("Participant", participantSchema);
 
+// BlacklistedToken Model
+const blacklistedTokenSchema = new mongoose.Schema({
+  token: { type: String, required: true, unique: true },
+  expiresAt: { type: Date, required: true, index: { expires: 0 } }, // Manual TTL management
+});
+const BlacklistedToken = mongoose.model(
+  "BlacklistedToken",
+  blacklistedTokenSchema
+);
+
 // Response Helper Function
 const sendResponse = (res, statusCode, message, data = null) => {
   res.status(statusCode).json({ statusCode, message, data });
@@ -67,13 +77,17 @@ const authenticateJWT = (req, res, next) => {
     return sendResponse(res, 401, "Unauthenticated");
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) {
-      return sendResponse(res, 403, "Invalid token");
-    }
-    req.user = user;
-    next();
-  });
+  // Check if token is blacklisted
+  BlacklistedToken.findOne({ token })
+    .then((blacklisted) => {
+      if (blacklisted) return sendResponse(res, 401, "Token is expired");
+      jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) return sendResponse(res, 403, "Invalid token");
+        req.user = user;
+        next();
+      });
+    })
+    .catch((err) => sendResponse(res, 500, "Server error"));
 };
 
 // Error Handling Middleware
@@ -356,6 +370,24 @@ app.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
     console.error("Error deleting category:", err.message);
     sendResponse(res, 500, "Server error", null);
   }
+});
+
+// Logout API
+app.post('/api/admin/logout', authenticateJWT, (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  // Decode token to get expiration
+  const decoded = jwt.decode(token, { complete: true });
+  if (!decoded || !decoded.payload.exp) {
+    return sendResponse(res, 400, "Invalid token data");
+  }
+  const expiresAt = new Date(decoded.payload.exp * 1000); // JWT exp is in seconds
+
+  // Blacklist the token
+  const blacklistedToken = new BlacklistedToken({ token, expiresAt });
+  blacklistedToken.save()
+    .then(() => sendResponse(res, 200, "Logout successful"))
+    .catch(err => sendResponse(res, 500, "Failed to blacklist token"));
 });
 
 // Start Server
