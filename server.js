@@ -162,6 +162,19 @@ app.get("/api/categories", authenticateJWT, async (req, res) => {
   }
 });
 
+// List Categories (User)
+app.get("/api/user/category", async (req, res) => {
+  try {
+    const category = await Category.findOne({ is_selected: true });
+    if (!category) {
+      return sendResponse(res, 404, "No selected category found", null);
+    }
+    sendResponse(res, 200, "Category retrieved successfully", category);
+  } catch (err) {
+    sendResponse(res, 500, "Server error", null);
+  }
+});
+
 // Create Category (Admin)
 app.post("/api/categories", authenticateJWT, async (req, res) => {
   const { name } = req.body;
@@ -291,18 +304,13 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
 
     // Check for duplicate name if name is being updated
     if (name) {
-      const existingCategory = await Category.findOne({ 
-        name: name.trim(), 
-        _id: { $ne: id } 
+      const existingCategory = await Category.findOne({
+        name: name.trim(),
+        _id: { $ne: id },
       });
-      
+
       if (existingCategory) {
-        return sendResponse(
-          res,
-          400,
-          "Category name already exists",
-          null
-        );
+        return sendResponse(res, 400, "Category name already exists", null);
       }
     }
 
