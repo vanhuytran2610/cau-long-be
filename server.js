@@ -58,7 +58,7 @@ const Participant = mongoose.model("Participant", participantSchema);
 // BlacklistedToken Model
 const blacklistedTokenSchema = new mongoose.Schema({
   token: { type: String, required: true, unique: true },
-  expiresAt: { type: Date, required: true, index: { expires: 0 } }, // Manual TTL management
+  expiresAt: { type: Date, required: true, default: null }, // Manual TTL management
 });
 const BlacklistedToken = mongoose.model(
   "BlacklistedToken",
@@ -139,15 +139,30 @@ app.post("/api/admin/login", async (req, res) => {
       return sendResponse(res, 400, "Invalid credentials");
     }
 
-    const token = jwt.sign({ id: admin._id, username: admin.username }, process.env.JWT_SECRET);
-    sendResponse(res, 200, "Login successful", { username, token });
+    // Token without expiration (permanent token)
+    const token = jwt.sign(
+      {
+        id: admin._id,
+        username: admin.username,
+        type: "admin", // Add user type for better validation
+      },
+      process.env.JWT_SECRET
+      // No expiresIn option = token never expires
+    );
+
+    sendResponse(res, 200, "Login successful", {
+      username,
+      token,
+      // No expiration info since token is permanent
+    });
   } catch (err) {
+    console.error("Login error:", err); // Add logging for debugging
     sendResponse(res, 500, "Server error", null);
   }
 });
 
 // Check Authentication API
-app.get('/api/admin/check-auth', authenticateJWT, (req, res) => {
+app.get("/api/admin/check-auth", authenticateJWT, (req, res) => {
   // If middleware passes, the token is valid and not blacklisted
   sendResponse(res, 200, "Authenticated", { user: req.user });
 });
@@ -408,19 +423,43 @@ app.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
 app.post("/api/admin/logout", authenticateJWT, (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
-  // Decode token to get expiration
+  if (!token) {
+    return sendResponse(res, 400, "No token provided");
+  }
+
+  // Decode token to get payload
   const decoded = jwt.decode(token, { complete: true });
-  if (!decoded || !decoded.payload.exp) {
+  if (!decoded || !decoded.payload) {
     return sendResponse(res, 400, "Invalid token data");
   }
-  const expiresAt = new Date(decoded.payload.exp * 1000); // JWT exp is in seconds
+
+  // Handle both tokens with and without expiration
+  let expiresAt;
+  if (decoded.payload.exp) {
+    // Token has expiration
+    expiresAt = new Date(decoded.payload.exp * 1000);
+  } else {
+    // Token has no expiration - set a far future date for cleanup purposes
+    // or set to null if your BlacklistedToken model allows it
+    expiresAt = new Date('2099-12-31'); // Far future date
+    // Alternative: expiresAt = null; (if your schema allows null)
+  }
 
   // Blacklist the token
-  const blacklistedToken = new BlacklistedToken({ token, expiresAt });
+  const blacklistedToken = new BlacklistedToken({ 
+    token, 
+    expiresAt,
+    userId: decoded.payload.id, // Optional: store user ID for better tracking
+    createdAt: new Date()
+  });
+
   blacklistedToken
     .save()
     .then(() => sendResponse(res, 200, "Logout successful"))
-    .catch((err) => sendResponse(res, 500, "Failed to blacklist token"));
+    .catch((err) => {
+      console.error('Blacklist token error:', err);
+      sendResponse(res, 500, "Failed to blacklist token");
+    });
 });
 
 // Start Server
