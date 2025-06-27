@@ -38,10 +38,13 @@ const adminSchema = new mongoose.Schema({
 });
 const Admin = mongoose.model("Admin", adminSchema);
 
-const categorySchema = new mongoose.Schema({
-  name: { type: String, required: true, unique: true },
-  is_selected: { type: Boolean, default: false },
-});
+const categorySchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, unique: true },
+    is_selected: { type: Boolean, default: false },
+  },
+  { timestamps: true }
+);
 const Category = mongoose.model("Category", categorySchema);
 
 const participantSchema = new mongoose.Schema({
@@ -170,7 +173,7 @@ app.get("/api/admin/check-auth", authenticateJWT, (req, res) => {
 // List Categories (Admin)
 app.get("/api/categories", authenticateJWT, async (req, res) => {
   try {
-    const categories = await Category.find();
+    const categories = await Category.find().sort({ createdAt: -1 });
     sendResponse(res, 200, "Categories retrieved successfully", categories);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
@@ -274,7 +277,7 @@ app.delete(
 // Submit to Join (Public)
 app.post("/api/participants", async (req, res) => {
   const { name, status, categoryId } = req.body;
-  if (!name || !status || !categoryId) {
+  if (!status || !categoryId) {
     return sendResponse(res, 400, "Nhập tên đi bạn eeiii!");
   }
   if (!["tham gia", "lần sau"].includes(status)) {
@@ -441,23 +444,23 @@ app.post("/api/admin/logout", authenticateJWT, (req, res) => {
   } else {
     // Token has no expiration - set a far future date for cleanup purposes
     // or set to null if your BlacklistedToken model allows it
-    expiresAt = new Date('2099-12-31'); // Far future date
+    expiresAt = new Date("2099-12-31"); // Far future date
     // Alternative: expiresAt = null; (if your schema allows null)
   }
 
   // Blacklist the token
-  const blacklistedToken = new BlacklistedToken({ 
-    token, 
+  const blacklistedToken = new BlacklistedToken({
+    token,
     expiresAt,
     userId: decoded.payload.id, // Optional: store user ID for better tracking
-    createdAt: new Date()
+    createdAt: new Date(),
   });
 
   blacklistedToken
     .save()
     .then(() => sendResponse(res, 200, "Logout successful"))
     .catch((err) => {
-      console.error('Blacklist token error:', err);
+      console.error("Blacklist token error:", err);
       sendResponse(res, 500, "Failed to blacklist token");
     });
 });
