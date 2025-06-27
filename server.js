@@ -277,7 +277,7 @@ app.delete(
 // Submit to Join (Public)
 app.post("/api/participants", async (req, res) => {
   const { name, status, categoryId } = req.body;
-  if (!status || !categoryId) {
+  if (!name || !status || !categoryId) {
     return sendResponse(res, 400, "Nhập tên đi bạn eeiii!");
   }
   if (!["tham gia", "lần sau"].includes(status)) {
