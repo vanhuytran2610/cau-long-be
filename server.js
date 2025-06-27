@@ -146,6 +146,12 @@ app.post("/api/admin/login", async (req, res) => {
   }
 });
 
+// Check Authentication API
+app.get('/api/admin/check-auth', authenticateJWT, (req, res) => {
+  // If middleware passes, the token is valid and not blacklisted
+  sendResponse(res, 200, "Authenticated", { user: req.user });
+});
+
 // List Categories (Admin)
 app.get("/api/categories", authenticateJWT, async (req, res) => {
   try {
