@@ -182,7 +182,7 @@ app.get("/api/user/category", async (req, res) => {
   try {
     const category = await Category.findOne({ is_selected: true });
     if (!category) {
-      return sendResponse(res, 404, "No selected category found", null);
+      return sendResponse(res, 200, "No selected category found", null);
     }
     sendResponse(res, 200, "Category retrieved successfully", category);
   } catch (err) {
