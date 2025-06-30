@@ -42,6 +42,7 @@ const categorySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, unique: true },
     is_selected: { type: Boolean, default: false },
+    isCalculated: { type: Boolean, default: false }, // Indicates if expenses have been calculated
   },
   { timestamps: true }
 );
@@ -55,6 +56,11 @@ const participantSchema = new mongoose.Schema({
     ref: "Category",
     required: true,
   },
+  paymentBefore: { type: Number, default: 0 }, // Amount paid before calculation
+  paymentDone: { type: Boolean, default: false }, // Indicates if payment is completed
+  paidAmount: { type: Number, default: 0 }, // Amount to pay or receive (shareAmount - paymentBefore + otherAmount)
+  shareAmount: { type: Number, default: 0 }, // Calculated share per person
+  otherAmount: { type: Number, default: 0 }, // Other additional payments
 });
 const Participant = mongoose.model("Participant", participantSchema);
 
@@ -67,6 +73,91 @@ const BlacklistedToken = mongoose.model(
   "BlacklistedToken",
   blacklistedTokenSchema
 );
+
+// Function to calculate shared expenses
+async function calculateSharedExpenses(categoryId, payments) {
+  try {
+    // Fetch all participants for the category
+    const participants = await Participant.find({ category: categoryId });
+
+    // Validate input payments
+    if (!payments || !Array.isArray(payments) || payments.length === 0) {
+      throw new Error("Payments array is required and must not be empty");
+    }
+
+    // Validate all names in payments exist in participants
+    const participantNames = participants.map((p) => p._id.toString());
+    const errors = [];
+    
+    for (const payment of payments) {
+      if (!participantNames.includes(payment.id)) {
+        errors.push({
+          message: `Participant ${payment.id} not found in category`,
+        });
+      }
+      if (typeof payment.amount !== "number" || payment.amount < 0) {
+        errors.push({
+          message: `Invalid amount for ${payment.id}`,
+        });
+      }
+    }
+
+    // If there are validation errors, return them
+    if (errors.length > 0) {
+      return {
+        statusCode: 400,
+        errors,
+        data: null,
+      };
+    }
+
+    // Calculate total paid and number of participants
+    const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+    const participantCount = participants.length;
+    const sharePerPerson = totalPaid / participantCount;
+
+    // Calculate results for each participant
+    const results = participants.map((participant) => {
+      const payment = payments.find((p) => p.id === participant._id.toString()) || {
+        amount: 0,
+      };
+      const amountOwed = sharePerPerson - payment.amount;
+
+      return {
+        id: participant._id,
+        name: participant.name,
+        paymentBefore: Math.round(payment.amount),
+        shareAmount: Math.round(sharePerPerson),
+        paidAmount: Math.round(amountOwed), // Positive: needs to pay, Negative: should receive
+      };
+    });
+
+    // Update participants with new amounts and payment status (without transaction)
+    for (const participant of participants) {
+      const payment = payments.find((p) => p.id === participant._id.toString());
+      await Participant.findByIdAndUpdate(
+        participant._id,
+        {
+          paymentBefore: payment ? Math.round(payment.amount) : 0,
+          paidAmount: payment
+            ? Math.round(sharePerPerson - payment.amount)
+            : Math.round(sharePerPerson),
+          shareAmount: Math.round(sharePerPerson),
+          paymentDone:
+            payment && payment.amount >= sharePerPerson ? true : false,
+        }
+      );
+    }
+
+    return {
+      totalPaid,
+      sharePerPerson,
+      results,
+    };
+  } catch (err) {
+    throw new Error(`Error calculating shared expenses: ${err.message}`);
+  }
+}
 
 // Response Helper Function
 const sendResponse = (res, statusCode, message, data = null) => {
@@ -105,20 +196,20 @@ app.use((err, req, res, next) => {
 app.post("/api/admin/register", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return sendResponse(res, 400, "Username and password required");
+    return sendResponse(res, 400, "Username và password không được để trống!");
   }
 
   try {
     const existingAdmin = await Admin.findOne({ username });
     if (existingAdmin) {
-      return sendResponse(res, 400, "Username already exists");
+      return sendResponse(res, 400, "Username đã tồn tại!");
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const admin = new Admin({ username, password: hashedPassword });
     await admin.save();
 
-    sendResponse(res, 201, "Admin registered successfully", { username });
+    sendResponse(res, 201, "Đăng ký tài khoản admin thành công!", { username });
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
@@ -128,18 +219,18 @@ app.post("/api/admin/register", async (req, res) => {
 app.post("/api/admin/login", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return sendResponse(res, 400, "Username and password required");
+    return sendResponse(res, 400, "Username và password không được để trống!");
   }
 
   try {
     const admin = await Admin.findOne({ username });
     if (!admin) {
-      return sendResponse(res, 400, "Invalid credentials");
+      return sendResponse(res, 400, "Thông tin đăng nhập không hợp lệ!");
     }
 
     const isMatch = await bcrypt.compare(password, admin.password);
     if (!isMatch) {
-      return sendResponse(res, 400, "Invalid credentials");
+      return sendResponse(res, 400, "Thông tin đăng nhập không hợp lệ!");
     }
 
     // Token without expiration (permanent token)
@@ -153,7 +244,7 @@ app.post("/api/admin/login", async (req, res) => {
       // No expiresIn option = token never expires
     );
 
-    sendResponse(res, 200, "Login successful", {
+    sendResponse(res, 200, "Đăng nhập thành công!", {
       username,
       token,
       // No expiration info since token is permanent
@@ -174,20 +265,25 @@ app.get("/api/admin/check-auth", authenticateJWT, (req, res) => {
 app.get("/api/categories", authenticateJWT, async (req, res) => {
   try {
     const categories = await Category.find().sort({ createdAt: -1 });
-    sendResponse(res, 200, "Categories retrieved successfully", categories);
+    sendResponse(res, 200, "Lấy danh sách ngày thành công!", categories);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
 });
 
-// List Categories (User)
+// Get Selected Category (User)
 app.get("/api/user/category", async (req, res) => {
   try {
     const category = await Category.findOne({ is_selected: true });
     if (!category) {
-      return sendResponse(res, 200, "No selected category found", null);
+      return sendResponse(
+        res,
+        200,
+        "Không có ngày nào được chọn để vote!",
+        null
+      );
     }
-    sendResponse(res, 200, "Category retrieved successfully", category);
+    sendResponse(res, 200, "Lấy ngày vote thành công!", category);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
@@ -197,18 +293,18 @@ app.get("/api/user/category", async (req, res) => {
 app.post("/api/categories", authenticateJWT, async (req, res) => {
   const { name } = req.body;
   if (!name) {
-    return sendResponse(res, 400, "Category name required");
+    return sendResponse(res, 400, "Ngày vote không được để trống!");
   }
 
   try {
     const existingCategory = await Category.findOne({ name });
     if (existingCategory) {
-      return sendResponse(res, 400, "Category already exists");
+      return sendResponse(res, 400, "Ngày này đã được tạo rồi!");
     }
 
     const category = new Category({ name });
     await category.save();
-    sendResponse(res, 201, "Category created successfully", category);
+    sendResponse(res, 201, "Tạo ngày vote thành công!", category);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
@@ -216,42 +312,96 @@ app.post("/api/categories", authenticateJWT, async (req, res) => {
 
 // List Participants by Category (Admin)
 app.get("/api/participants/:categoryId", authenticateJWT, async (req, res) => {
-  const { categoryId } = req.params;
   try {
-    const category = Category.findById(categoryId);
+    const { categoryId } = req.params;
+
+    // Validate category
+    const category = await Category.findById(categoryId);
     if (!category) {
       return sendResponse(res, 404, "Category not found", null);
     }
+
+    // Fetch participants
     const participants = await Participant.find({
       category: categoryId,
     }).populate("category");
+
+    // If no participants, return empty array
     if (!participants.length) {
-      return sendResponse(
-        res,
-        200,
-        "No participants found for this category",
-        []
-      );
+      return sendResponse(res, 200, "No participants found for this category", {
+        category,
+        participants: [],
+      });
     }
-    sendResponse(res, 200, "Participants retrieved successfully", participants);
+
+    const response = {
+      category,
+      participants,
+    };
+
+    sendResponse(res, 200, "Participants retrieved successfully", response);
   } catch (err) {
+    console.error("Error retrieving participants:", err.message);
     sendResponse(res, 500, "Server error", null);
   }
 });
 
-// New Delete Participant API
-app.delete(
+// Update Participant Payment Status API
+app.put(
   "/api/participants/:categoryId/:participantId",
   authenticateJWT,
   async (req, res) => {
     try {
       const { categoryId, participantId } = req.params;
-      const category = Category.findById(categoryId);
+      const { paymentDone, otherAmount } = req.body;
+
+      // Validate input
+      if (paymentDone !== undefined && typeof paymentDone !== "boolean") {
+        return sendResponse(
+          res,
+          400,
+          "paymentDone must be a boolean value",
+          null
+        );
+      }
+      if (
+        otherAmount !== undefined &&
+        (typeof otherAmount !== "number" || otherAmount < 0)
+      ) {
+        return sendResponse(
+          res,
+          400,
+          "otherAmount must be a non-negative number",
+          null
+        );
+      }
+      if (paymentDone === undefined && otherAmount === undefined) {
+        return sendResponse(
+          res,
+          400,
+          "At least one of paymentDone or otherAmount is required",
+          null
+        );
+      }
+
+      // Validate category
+      const category = await Category.findById(categoryId);
       if (!category) {
         return sendResponse(res, 404, "Category not found", null);
       }
-      // Find and delete the participant
-      const participant = await Participant.findOneAndDelete({
+
+      // Prevent updates if category is not calculated
+      if (!category.isCalculated) {
+        return sendResponse(
+          res,
+          400,
+          "Cannot update participant payment status until expenses are calculated",
+          null
+        );
+      }
+
+      // Find the participant
+      const participant = await Participant.findOne({
         _id: participantId,
         category: categoryId,
       });
@@ -265,8 +415,122 @@ app.delete(
         );
       }
 
-      // Optionally update the category (if needed), but not required here
-      sendResponse(res, 200, "Participant deleted successfully", participant);
+      // Prepare update fields
+      const updateFields = {};
+      if (paymentDone !== undefined) {
+        updateFields.paymentDone = paymentDone;
+      }
+      if (otherAmount !== undefined) {
+        updateFields.otherAmount = otherAmount;
+        updateFields.paidAmount =
+          participant.shareAmount - participant.paymentBefore + otherAmount;
+      }
+
+      // Update participant
+      const updatedParticipant = await Participant.findByIdAndUpdate(
+        participantId,
+        updateFields,
+        { new: true, runValidators: true }
+      );
+
+      sendResponse(
+        res,
+        200,
+        "Participant payment status updated successfully",
+        updatedParticipant
+      );
+    } catch (err) {
+      console.error("Error updating participant payment status:", err.message);
+      sendResponse(res, 500, "Server error", null);
+    }
+  }
+);
+
+// New Delete Participant API
+app.delete(
+  "/api/participants/:categoryId/:participantId",
+  authenticateJWT,
+  async (req, res) => {
+    try {
+      const { categoryId, participantId } = req.params;
+
+      // Validate category
+      const category = await Category.findById(categoryId);
+      if (!category) {
+        return sendResponse(res, 404, "Category not found", null);
+      }
+
+      // Find the participant
+      const participant = await Participant.findOne({
+        _id: participantId,
+        category: categoryId,
+      });
+
+      if (!participant) {
+        return sendResponse(
+          res,
+          404,
+          "Participant not found in this category",
+          null
+        );
+      }
+
+      // Prevent deletion of paid participants only if isCalculated is true
+      if (
+        category.isCalculated &&
+        (participant.paymentDone ||
+          participant.paymentBefore > 0 ||
+          participant.otherAmount > 0)
+      ) {
+        return sendResponse(
+          res,
+          400,
+          "Cannot delete participant who has already paid",
+          null
+        );
+      }
+
+      // Delete the participant (without transaction)
+      await Participant.findOneAndDelete({
+        _id: participantId,
+        category: categoryId,
+      });
+
+      // Get remaining participants and their payments
+      const remainingParticipants = await Participant.find({
+        category: categoryId,
+      });
+      
+      const payments = remainingParticipants
+        .filter((p) => p.paymentBefore > 0)
+        .map((p) => ({
+          id: p._id.toString(), // Convert ObjectId to string
+          amount: p.paymentBefore,
+        }));
+
+      // Recalculate expenses if there are payments
+      let expenseResult = null;
+      if (payments.length > 0) {
+        expenseResult = await calculateSharedExpenses(categoryId, payments);
+        
+        // Update isCalculated to true only if currently false
+        if (!category.isCalculated) {
+          await Category.findByIdAndUpdate(categoryId, { isCalculated: true });
+        }
+      }
+
+      const response = {
+        message: "Participant deleted successfully",
+        deletedParticipant: participant,
+        expenses: expenseResult,
+      };
+
+      sendResponse(
+        res,
+        200,
+        "Participant deleted and expenses recalculated",
+        response
+      );
     } catch (err) {
       console.error("Error deleting participant:", err.message);
       sendResponse(res, 500, "Server error", null);
@@ -308,14 +572,14 @@ app.post("/api/participants", async (req, res) => {
 app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, is_selected } = req.body;
+    const { name, is_selected, payments } = req.body;
 
     // Validate input
-    if (is_selected === undefined && !name) {
+    if (is_selected === undefined && !name && !payments) {
       return sendResponse(
         res,
         400,
-        "At least one of name or is_selected is required",
+        "At least one of name, is_selected, or payments is required",
         null
       );
     }
@@ -332,7 +596,6 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
       }
     }
 
-    // Check if the connection supports transactions
     const session = await mongoose.startSession();
     let transactionSuccessful = false;
 
@@ -349,47 +612,120 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
       }
 
       // Update the specific category
-      const updatedCategory = await Category.findByIdAndUpdate(
-        id,
-        { name, is_selected: is_selected === true },
-        { new: true, runValidators: true, session }
-      );
-
-      if (!updatedCategory) {
+      const category = await Category.findById(id);
+      if (!category) {
         await session.abortTransaction();
         return sendResponse(res, 404, "Category not found", null);
       }
 
+      const updateFields = { name, is_selected: is_selected === true };
+
+      // Calculate shared expenses if payments are provided
+      let expenseResult = null;
+      if (payments) {
+        expenseResult = await calculateSharedExpenses(id, payments);
+      }
+      console.log("ex", expenseResult);
+      let finalResults = null;
+      if (expenseResult?.statusCode == 400) {
+        finalResults = {
+          message: expenseResult.errors,
+        };
+      } else {
+        finalResults = expenseResult;
+      }
+
+      if (
+        payments &&
+        !category.isCalculated &&
+        expenseResult?.statusCode !== 400
+      ) {
+        updateFields.isCalculated = true; // Set isCalculated only if currently false
+      }
+      const updatedCategory = await Category.findByIdAndUpdate(
+        id,
+        updateFields,
+        { new: true, runValidators: true, session }
+      );
+
       await session.commitTransaction();
       transactionSuccessful = true;
-      sendResponse(res, 200, "Category updated successfully", updatedCategory);
+
+      const response = {
+        category: updatedCategory,
+        expenses: finalResults,
+      };
+
+      sendResponse(res, 200, "Category updated successfully", response);
     } catch (err) {
       await session.abortTransaction();
-      // Fallback to non-transaction update if transaction fails
+      // Fallback to non-transaction update
       if (err.message.includes("Transaction numbers are only allowed")) {
         console.warn(
           "Transaction failed, falling back to non-transaction update:",
           err.message
         );
+        const category = await Category.findById(id);
+        if (!category) {
+          return sendResponse(res, 404, "Category not found", null);
+        }
+
+        const updateFields = { name, is_selected: is_selected === true };
+
+        let expenseResult = null;
+        if (payments) {
+          expenseResult = await calculateSharedExpenses(id, payments);
+          console.log("ex", calculateSharedExpenses(id, payments));
+        }
+
+        let finalResults = null;
+        if (expenseResult?.statusCode == 400) {
+          finalResults = {
+            errors: expenseResult.errors,
+          };
+        } else {
+          finalResults = expenseResult;
+        }
+
+        if (
+          payments &&
+          !category.isCalculated &&
+          expenseResult?.statusCode !== 400
+        ) {
+          updateFields.isCalculated = true; // Set isCalculated only if currently false
+        }
         const fallbackUpdate = await Category.findByIdAndUpdate(
           id,
-          { name, is_selected: is_selected === true },
+          updateFields,
           { new: true, runValidators: true }
         );
-        if (!fallbackUpdate)
-          return sendResponse(res, 404, "Category not found", null);
-        // Manually update others if is_selected is true (non-atomic)
+
         if (is_selected === true) {
           await Category.updateMany(
             { _id: { $ne: id } },
             { is_selected: false }
           );
         }
+
+        const response = {
+          category: fallbackUpdate,
+          expenses: finalResults,
+        };
+
+        if (expenseResult?.statusCode === 400) {
+          return sendResponse(
+            res,
+            400,
+            "Category updated unsuccessfully",
+            response
+          );
+        }
+
         return sendResponse(
           res,
           200,
           "Category updated successfully",
-          fallbackUpdate
+          response
         );
       }
       throw err;
