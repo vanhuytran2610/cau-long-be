@@ -196,20 +196,20 @@ app.use((err, req, res, next) => {
 app.post("/api/admin/register", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return sendResponse(res, 400, "Username và password không được để trống!");
+    return sendResponse(res, 400, "Username and password are required!");
   }
 
   try {
     const existingAdmin = await Admin.findOne({ username });
     if (existingAdmin) {
-      return sendResponse(res, 400, "Username đã tồn tại!");
+      return sendResponse(res, 400, "Username is available!");
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const admin = new Admin({ username, password: hashedPassword });
     await admin.save();
 
-    sendResponse(res, 201, "Đăng ký tài khoản admin thành công!", { username });
+    sendResponse(res, 201, "Register Admin Successfully!", { username });
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
@@ -219,18 +219,18 @@ app.post("/api/admin/register", async (req, res) => {
 app.post("/api/admin/login", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return sendResponse(res, 400, "Username và password không được để trống!");
+    return sendResponse(res, 400, "Username and password are required!");
   }
 
   try {
     const admin = await Admin.findOne({ username });
     if (!admin) {
-      return sendResponse(res, 400, "Thông tin đăng nhập không hợp lệ!");
+      return sendResponse(res, 400, "Invalid login information!");
     }
 
     const isMatch = await bcrypt.compare(password, admin.password);
     if (!isMatch) {
-      return sendResponse(res, 400, "Thông tin đăng nhập không hợp lệ!");
+      return sendResponse(res, 400, "Invalid login information!");
     }
 
     // Token without expiration (permanent token)
@@ -244,7 +244,7 @@ app.post("/api/admin/login", async (req, res) => {
       // No expiresIn option = token never expires
     );
 
-    sendResponse(res, 200, "Đăng nhập thành công!", {
+    sendResponse(res, 200, "Login Successfully!", {
       username,
       token,
       // No expiration info since token is permanent
@@ -265,7 +265,7 @@ app.get("/api/admin/check-auth", authenticateJWT, (req, res) => {
 app.get("/api/categories", authenticateJWT, async (req, res) => {
   try {
     const categories = await Category.find().sort({ createdAt: -1 });
-    sendResponse(res, 200, "Lấy danh sách ngày thành công!", categories);
+    sendResponse(res, 200, "Fetch categories successfully!", categories);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
@@ -279,11 +279,11 @@ app.get("/api/user/category", async (req, res) => {
       return sendResponse(
         res,
         200,
-        "Không có ngày nào được chọn để vote!",
+        "No selected date!",
         null
       );
     }
-    sendResponse(res, 200, "Lấy ngày vote thành công!", category);
+    sendResponse(res, 200, "Get selected date successfully!", category);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
@@ -293,18 +293,18 @@ app.get("/api/user/category", async (req, res) => {
 app.post("/api/categories", authenticateJWT, async (req, res) => {
   const { name } = req.body;
   if (!name) {
-    return sendResponse(res, 400, "Ngày vote không được để trống!");
+    return sendResponse(res, 400, "Selected date is required!");
   }
 
   try {
     const existingCategory = await Category.findOne({ name });
     if (existingCategory) {
-      return sendResponse(res, 400, "Ngày này đã được tạo rồi!");
+      return sendResponse(res, 400, "This data is available!");
     }
 
     const category = new Category({ name });
     await category.save();
-    sendResponse(res, 201, "Tạo ngày vote thành công!", category);
+    sendResponse(res, 201, "Create vote date successfully!", category);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
   }
@@ -318,7 +318,7 @@ app.get("/api/participants/:categoryId", authenticateJWT, async (req, res) => {
     // Validate category
     const category = await Category.findById(categoryId);
     if (!category) {
-      return sendResponse(res, 404, "Category not found", null);
+      return sendResponse(res, 404, "Vote date not found", null);
     }
 
     // Fetch participants
@@ -328,7 +328,7 @@ app.get("/api/participants/:categoryId", authenticateJWT, async (req, res) => {
 
     // If no participants, return empty array
     if (!participants.length) {
-      return sendResponse(res, 200, "No participants found for this category", {
+      return sendResponse(res, 200, "No participants found for this date", {
         category,
         participants: [],
       });
@@ -387,7 +387,7 @@ app.put(
       // Validate category
       const category = await Category.findById(categoryId);
       if (!category) {
-        return sendResponse(res, 404, "Category not found", null);
+        return sendResponse(res, 404, "Vote date not found", null);
       }
 
       // Prevent updates if category is not calculated
@@ -410,7 +410,7 @@ app.put(
         return sendResponse(
           res,
           404,
-          "Participant not found in this category",
+          "Participant not found in this date",
           null
         );
       }
@@ -457,7 +457,7 @@ app.delete(
       // Validate category
       const category = await Category.findById(categoryId);
       if (!category) {
-        return sendResponse(res, 404, "Category not found", null);
+        return sendResponse(res, 404, "Vote date not found", null);
       }
 
       // Find the participant
@@ -470,7 +470,7 @@ app.delete(
         return sendResponse(
           res,
           404,
-          "Participant not found in this category",
+          "Participant not found in this date",
           null
         );
       }
@@ -592,7 +592,7 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
       });
 
       if (existingCategory) {
-        return sendResponse(res, 400, "Category name already exists", null);
+        return sendResponse(res, 400, "Vote date name already exists", null);
       }
     }
 
@@ -615,7 +615,7 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
       const category = await Category.findById(id);
       if (!category) {
         await session.abortTransaction();
-        return sendResponse(res, 404, "Category not found", null);
+        return sendResponse(res, 404, "Vote date not found", null);
       }
 
       const updateFields = { name, is_selected: is_selected === true };
@@ -625,7 +625,7 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
       if (payments) {
         expenseResult = await calculateSharedExpenses(id, payments);
       }
-      console.log("ex", expenseResult);
+
       let finalResults = null;
       if (expenseResult?.statusCode == 400) {
         finalResults = {
@@ -656,7 +656,7 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
         expenses: finalResults,
       };
 
-      sendResponse(res, 200, "Category updated successfully", response);
+      sendResponse(res, 200, "Vote date updated successfully", response);
     } catch (err) {
       await session.abortTransaction();
       // Fallback to non-transaction update
@@ -667,7 +667,7 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
         );
         const category = await Category.findById(id);
         if (!category) {
-          return sendResponse(res, 404, "Category not found", null);
+          return sendResponse(res, 404, "Vote date not found", null);
         }
 
         const updateFields = { name, is_selected: is_selected === true };
@@ -716,7 +716,7 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
           return sendResponse(
             res,
             400,
-            "Category updated unsuccessfully",
+            "Vote date updated unsuccessfully",
             response
           );
         }
@@ -724,7 +724,7 @@ app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
         return sendResponse(
           res,
           200,
-          "Category updated successfully",
+          "Vote date updated successfully",
           response
         );
       }
@@ -749,9 +749,9 @@ app.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
     const deletedCategory = await Category.findByIdAndDelete(id);
 
     if (!deletedCategory)
-      return sendResponse(res, 404, "Category not found", null);
+      return sendResponse(res, 404, "Vote date not found", null);
 
-    sendResponse(res, 200, "Category deleted successfully", deletedCategory);
+    sendResponse(res, 200, "Vote date deleted successfully", deletedCategory);
   } catch (err) {
     console.error("Error deleting category:", err.message);
     sendResponse(res, 500, "Server error", null);
