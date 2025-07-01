@@ -358,17 +358,17 @@ app.put(
           null
         );
       }
-      if (
-        otherAmount !== undefined &&
-        (typeof otherAmount !== "number" || otherAmount < 0)
-      ) {
-        return sendResponse(
-          res,
-          400,
-          "otherAmount must be a non-negative number",
-          null
-        );
-      }
+      // if (
+      //   otherAmount !== undefined &&
+      //   (typeof otherAmount !== "number" || otherAmount < 0)
+      // ) {
+      //   return sendResponse(
+      //     res,
+      //     400,
+      //     "otherAmount must be a non-negative number",
+      //     null
+      //   );
+      // }
       if (paymentDone === undefined && otherAmount === undefined) {
         return sendResponse(
           res,
