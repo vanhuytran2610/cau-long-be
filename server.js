@@ -431,7 +431,7 @@ app.put(
         participantId,
         updateFields,
         { new: true, runValidators: true }
-      );
+      ).populate('category');
 
       sendResponse(
         res,
