@@ -61,6 +61,7 @@ const participantSchema = new mongoose.Schema({
   paidAmount: { type: Number, default: 0 }, // Amount to pay or receive (shareAmount - paymentBefore + otherAmount)
   shareAmount: { type: Number, default: 0 }, // Calculated share per person
   otherAmount: { type: Number, default: 0 }, // Other additional payments
+  reasonOtherAmount: { type: String, default: "" },
 });
 const Participant = mongoose.model("Participant", participantSchema);
 
@@ -88,7 +89,7 @@ async function calculateSharedExpenses(categoryId, payments) {
     // Validate all names in payments exist in participants
     const participantNames = participants.map((p) => p._id.toString());
     const errors = [];
-    
+
     for (const payment of payments) {
       if (!participantNames.includes(payment.id)) {
         errors.push({
@@ -118,7 +119,9 @@ async function calculateSharedExpenses(categoryId, payments) {
 
     // Calculate results for each participant
     const results = participants.map((participant) => {
-      const payment = payments.find((p) => p.id === participant._id.toString()) || {
+      const payment = payments.find(
+        (p) => p.id === participant._id.toString()
+      ) || {
         amount: 0,
       };
       const amountOwed = sharePerPerson - payment.amount;
@@ -135,18 +138,14 @@ async function calculateSharedExpenses(categoryId, payments) {
     // Update participants with new amounts and payment status (without transaction)
     for (const participant of participants) {
       const payment = payments.find((p) => p.id === participant._id.toString());
-      await Participant.findByIdAndUpdate(
-        participant._id,
-        {
-          paymentBefore: payment ? Math.round(payment.amount) : 0,
-          paidAmount: payment
-            ? Math.round(sharePerPerson - payment.amount)
-            : Math.round(sharePerPerson),
-          shareAmount: Math.round(sharePerPerson),
-          paymentDone:
-            payment && payment.amount >= sharePerPerson ? true : false,
-        }
-      );
+      await Participant.findByIdAndUpdate(participant._id, {
+        paymentBefore: payment ? Math.round(payment.amount) : 0,
+        paidAmount: payment
+          ? Math.round(sharePerPerson - payment.amount)
+          : Math.round(sharePerPerson),
+        shareAmount: Math.round(sharePerPerson),
+        paymentDone: payment && payment.amount >= sharePerPerson ? true : false,
+      });
     }
 
     return {
@@ -276,12 +275,7 @@ app.get("/api/user/category", async (req, res) => {
   try {
     const category = await Category.findOne({ is_selected: true });
     if (!category) {
-      return sendResponse(
-        res,
-        200,
-        "No selected date!",
-        null
-      );
+      return sendResponse(res, 200, "No selected date!", null);
     }
     sendResponse(res, 200, "Get selected date successfully!", category);
   } catch (err) {
@@ -353,7 +347,7 @@ app.put(
   async (req, res) => {
     try {
       const { categoryId, participantId } = req.params;
-      const { paymentDone, otherAmount } = req.body;
+      const { paymentDone, otherAmount, reason } = req.body;
 
       // Validate input
       if (paymentDone !== undefined && typeof paymentDone !== "boolean") {
@@ -422,6 +416,7 @@ app.put(
       }
       if (otherAmount !== undefined) {
         updateFields.otherAmount = otherAmount;
+        updateFields.reasonOtherAmount = reason;
         updateFields.paidAmount =
           participant.shareAmount - participant.paymentBefore + otherAmount;
       }
@@ -431,7 +426,7 @@ app.put(
         participantId,
         updateFields,
         { new: true, runValidators: true }
-      ).populate('category');
+      ).populate("category");
 
       sendResponse(
         res,
@@ -500,7 +495,7 @@ app.delete(
       const remainingParticipants = await Participant.find({
         category: categoryId,
       });
-      
+
       const payments = remainingParticipants
         .filter((p) => p.paymentBefore > 0)
         .map((p) => ({
@@ -512,7 +507,7 @@ app.delete(
       let expenseResult = null;
       if (payments.length > 0) {
         expenseResult = await calculateSharedExpenses(categoryId, payments);
-        
+
         // Update isCalculated to true only if currently false
         if (!category.isCalculated) {
           await Category.findByIdAndUpdate(categoryId, { isCalculated: true });
