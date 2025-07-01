@@ -151,7 +151,7 @@ async function calculateSharedExpenses(categoryId, payments) {
 
     return {
       totalPaid,
-      sharePerPerson,
+      sharePerPerson: Math.round(sharePerPerson),
       results,
     };
   } catch (err) {
