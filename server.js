@@ -82,9 +82,9 @@ async function calculateSharedExpenses(categoryId, payments) {
     const participants = await Participant.find({ category: categoryId });
 
     // Validate input payments
-    if (!payments || !Array.isArray(payments) || payments.length === 0) {
-      throw new Error("Payments array is required and must not be empty");
-    }
+    // if (!payments || !Array.isArray(payments) || payments.length === 0) {
+    //   throw new Error("Payments array is required and must not be empty");
+    // }
 
     // Validate all names in payments exist in participants
     const participantNames = participants.map((p) => p._id.toString());
