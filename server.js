@@ -458,7 +458,7 @@ app.delete(
       // Find the participant
       const participant = await Participant.findOne({
         _id: participantId,
-        category: categoryId,
+        category: category,
       });
 
       if (!participant) {
