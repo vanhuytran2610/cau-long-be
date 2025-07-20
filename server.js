@@ -459,7 +459,7 @@ app.delete(
       const participant = await Participant.findOne({
         _id: participantId,
         category: categoryId,
-      });
+      }).populate("category");
 
       if (!participant) {
         return sendResponse(
