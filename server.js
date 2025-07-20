@@ -458,7 +458,7 @@ app.delete(
       // Find the participant
       const participant = await Participant.findOne({
         _id: participantId,
-        category: category,
+        category: categoryId,
       });
 
       if (!participant) {
@@ -489,7 +489,7 @@ app.delete(
       await Participant.findOneAndDelete({
         _id: participantId,
         category: categoryId,
-      });
+      }).populate("category");
 
       // Get remaining participants and their payments
       const remainingParticipants = await Participant.find({
