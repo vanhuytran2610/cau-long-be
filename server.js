@@ -124,7 +124,11 @@ async function calculateSharedExpenses(categoryId, payments) {
       ) || {
         amount: 0,
       };
-      const amountOwed = sharePerPerson - payment.amount;
+      let amountOwed = sharePerPerson - payment.amount;
+
+      if (participant.otherAmount) {
+        amountOwed = amountOwed + participant.otherAmount;
+      }
 
       return {
         id: participant._id,
@@ -132,19 +136,22 @@ async function calculateSharedExpenses(categoryId, payments) {
         paymentBefore: Math.round(payment.amount),
         shareAmount: Math.round(sharePerPerson),
         paidAmount: Math.round(amountOwed), // Positive: needs to pay, Negative: should receive
+        otherAmount: participant.otherAmount || 0
       };
     });
 
     // Update participants with new amounts and payment status (without transaction)
     for (const participant of participants) {
       const payment = payments.find((p) => p.id === participant._id.toString());
+      const otherAmount = participant.otherAmount || 0;
       await Participant.findByIdAndUpdate(participant._id, {
         paymentBefore: payment ? Math.round(payment.amount) : 0,
         paidAmount: payment
-          ? Math.round(sharePerPerson - payment.amount)
+          ? Math.round(sharePerPerson - payment.amount + otherAmount)
           : Math.round(sharePerPerson),
         shareAmount: Math.round(sharePerPerson),
         paymentDone: payment && payment.amount >= sharePerPerson ? true : false,
+        otherAmount: otherAmount 
       });
     }
 
