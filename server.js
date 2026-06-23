@@ -505,6 +505,10 @@ app.get("/api/user/categories", async (req, res) => {
       }),
     );
 
+    if (result.length === 0) {
+      return sendResponse(res, 404, "No categories found!", null);
+    }
+
     sendResponse(res, 200, "Fetch categories successfully!", result);
   } catch (err) {
     sendResponse(res, 500, "Server error", null);
