@@ -38,16 +38,16 @@ mongoose
     serverSelectionTimeoutMS: 30000,
     connectTimeoutMS: 60000,
   })
-  .then(() => {
-    console.log("Connected to MongoDB");
-    app.listen(process.env.PORT || 3000, () =>
-      console.log(`Server running on port ${process.env.PORT || 3000}`),
-    );
-  })
-  .catch((err) => {
-    console.error("MongoDB connection error:", err.message);
-    process.exit(1);
-  });
+  .then(() => console.log("Connected to MongoDB"))
+  .catch((err) => console.error("MongoDB connection error:", err.message));
+
+if (process.env.NODE_ENV !== "production") {
+  app.listen(process.env.PORT || 3000, () =>
+    console.log(`Server running on port ${process.env.PORT || 3000}`),
+  );
+}
+
+module.exports = app;
 
 // Schemas
 const adminSchema = new mongoose.Schema({
