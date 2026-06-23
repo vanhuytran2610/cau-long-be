@@ -1,3 +1,5 @@
+const { sendResponse } = require("./helper.js");
+
 const express = require("express");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
@@ -8,11 +10,9 @@ const cors = require("cors");
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use(cors());
-console.log("MONGODB_URI:", process.env.MONGODB_URI);
 // MongoDB Connection
-console.log("MONGODB_URI:", process.env.MONGODB_URI);
 mongoose
   .connect(process.env.MONGODB_URI, {
     useNewUrlParser: true,
@@ -23,7 +23,7 @@ mongoose
   .then(() => {
     console.log("Connected to MongoDB");
     app.listen(process.env.PORT || 3000, () =>
-      console.log(`Server running on port ${process.env.PORT || 3000}`)
+      console.log(`Server running on port ${process.env.PORT || 3000}`),
     );
   })
   .catch((err) => {
@@ -43,8 +43,12 @@ const categorySchema = new mongoose.Schema(
     name: { type: String, required: true, unique: true },
     is_selected: { type: Boolean, default: false },
     isCalculated: { type: Boolean, default: false }, // Indicates if expenses have been calculated
+    paymentInfo: { type: String, default: "" }, // Prompts for payment info
+    isShowMoney: { type: Boolean, default: false }, // Whether to show money to users
+    qr_img_url: { type: String, default: "" }, // Optional QR code image URL
+    paymentResult: { type: String, default: "" }, // Store raw AI response for reference
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 const Category = mongoose.model("Category", categorySchema);
 
@@ -56,12 +60,9 @@ const participantSchema = new mongoose.Schema({
     ref: "Category",
     required: true,
   },
-  paymentBefore: { type: Number, default: 0 }, // Amount paid before calculation
-  paymentDone: { type: Boolean, default: false }, // Indicates if payment is completed
-  paidAmount: { type: Number, default: 0 }, // Amount to pay or receive (shareAmount - paymentBefore + otherAmount)
-  shareAmount: { type: Number, default: 0 }, // Calculated share per person
-  otherAmount: { type: Number, default: 0 }, // Other additional payments
-  reasonOtherAmount: { type: String, default: "" },
+  quantity: { type: Number, default: 1 },
+  money: { type: Number, default: 0 },
+  isPaid: { type: Boolean, default: false },
 });
 const Participant = mongoose.model("Participant", participantSchema);
 
@@ -72,103 +73,17 @@ const blacklistedTokenSchema = new mongoose.Schema({
 });
 const BlacklistedToken = mongoose.model(
   "BlacklistedToken",
-  blacklistedTokenSchema
+  blacklistedTokenSchema,
 );
 
-// Function to calculate shared expenses
-async function calculateSharedExpenses(categoryId, payments) {
-  try {
-    // Fetch all participants for the category
-    const participants = await Participant.find({ category: categoryId });
-
-    // Validate input payments
-    // if (!payments || !Array.isArray(payments) || payments.length === 0) {
-    //   throw new Error("Payments array is required and must not be empty");
-    // }
-
-    // Validate all names in payments exist in participants
-    const participantNames = participants.map((p) => p._id.toString());
-    const errors = [];
-
-    for (const payment of payments) {
-      if (!participantNames.includes(payment.id)) {
-        errors.push({
-          message: `Participant ${payment.id} not found in category`,
-        });
-      }
-      if (typeof payment.amount !== "number" || payment.amount < 0) {
-        errors.push({
-          message: `Invalid amount for ${payment.id}`,
-        });
-      }
-    }
-
-    // If there are validation errors, return them
-    if (errors.length > 0) {
-      return {
-        statusCode: 400,
-        errors,
-        data: null,
-      };
-    }
-
-    // Calculate total paid and number of participants
-    const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
-    const participantCount = participants.length;
-    const sharePerPerson = totalPaid / participantCount;
-
-    // Calculate results for each participant
-    const results = participants.map((participant) => {
-      const payment = payments.find(
-        (p) => p.id === participant._id.toString()
-      ) || {
-        amount: 0,
-      };
-      let amountOwed = sharePerPerson - payment.amount;
-
-      if (participant.otherAmount) {
-        amountOwed = amountOwed + participant.otherAmount;
-      }
-
-      return {
-        id: participant._id,
-        name: participant.name,
-        paymentBefore: Math.round(payment.amount),
-        shareAmount: Math.round(sharePerPerson),
-        paidAmount: Math.round(amountOwed), // Positive: needs to pay, Negative: should receive
-        otherAmount: participant.otherAmount || 0
-      };
-    });
-
-    // Update participants with new amounts and payment status (without transaction)
-    for (const participant of participants) {
-      const payment = payments.find((p) => p.id === participant._id.toString());
-      const otherAmount = participant.otherAmount || 0;
-      await Participant.findByIdAndUpdate(participant._id, {
-        paymentBefore: payment ? Math.round(payment.amount) : 0,
-        paidAmount: payment
-          ? Math.round(sharePerPerson - payment.amount + otherAmount)
-          : Math.round(sharePerPerson),
-        shareAmount: Math.round(sharePerPerson),
-        paymentDone: payment && payment.amount >= sharePerPerson ? true : false,
-        otherAmount: otherAmount 
-      });
-    }
-
-    return {
-      totalPaid,
-      sharePerPerson: Math.round(sharePerPerson),
-      results,
-    };
-  } catch (err) {
-    throw new Error(`Error calculating shared expenses: ${err.message}`);
-  }
-}
-
-// Response Helper Function
-const sendResponse = (res, statusCode, message, data = null) => {
-  res.status(statusCode).json({ statusCode, message, data });
-};
+const qrImageSchema = new mongoose.Schema(
+  {
+    url: { type: String, required: true, unique: true },
+    name: { type: String, default: "" },
+  },
+  { timestamps: true },
+);
+const QrImage = mongoose.model("QrImage", qrImageSchema);
 
 // Middleware to verify JWT
 const authenticateJWT = (req, res, next) => {
@@ -189,6 +104,292 @@ const authenticateJWT = (req, res, next) => {
     })
     .catch((err) => sendResponse(res, 500, "Server error"));
 };
+
+async function calculateWithGroq(categoryId) {
+  const category = await Category.findById(categoryId);
+  if (!category || !category.paymentInfo) {
+    throw new Error("Category not found or paymentInfo is missing");
+  }
+
+  const participants = await Participant.find({
+    category: categoryId,
+    status: "tham gia",
+  });
+  if (!participants.length) {
+    throw new Error("No participants found for this category");
+  }
+
+  const participantNames = participants.map((p) => p.name);
+  const totalParticipants = participants.length;
+
+  const promptContent = `Thông tin buổi đánh cầu lông:
+${category.paymentInfo}
+
+Danh sách người tham gia (${totalParticipants} người):
+${participantNames.join(", ")}
+
+Bạn là chuyên gia tính tiền cầu lông.
+
+Nhiệm vụ:
+- Phân tích và tính toán chi phí chính xác.
+- Chỉ trả về JSON hợp lệ, không markdown, không giải thích.
+
+FORMAT OUTPUT:
+{
+  "tiền_sân": number,
+  "tiền_cầu": number,
+  "tổng": number,
+  "người_đánh": [
+    {
+      "tên": string,
+      "số_tiếng": number,
+      "số_tiền": number,
+      "ghi_chú": string
+    }
+  ],
+  "payment_text": string
+}
+
+QUY TẮC TÍNH:
+
+1. Xác định:
+- Tiền sân
+- Tiền cầu (số quả cầu × giá cầu)
+- Tổng chi phí
+- Ai đã tạm ứng và số tiền đã trả
+
+2. Chia đều:
+- Mỗi người phải trả = tổng chi phí / số người
+
+3. Chia theo tiếng:
+- Chi phí mỗi tiếng = tiền sân tiếng + tiền cầu tiếng
+- Mỗi tiếng chia đều cho người tham gia tiếng đó
+- Người tham gia nhiều tiếng = tổng các tiếng
+- Người tham gia 1 tiếng = chỉ trả tiếng đó
+
+4. Nếu có số tiền được set sẵn cho từng người:
+- Luôn ưu tiên giá trị đó
+- Không tự chia lại cho những người khác nếu không có yêu cầu rõ ràng
+
+5. Quy tắc tạm ứng (QUAN TRỌNG):
+- “Người nhận tiền” = người đã bỏ tiền ra trả trước, được mọi người chuyển khoản hoàn lại.
+  KHÔNG phải người chuyển tiền đi — người nhận tiền là người ĐỨNG CHỜ nhận chuyển khoản.
+- Nếu có nhiều người đã trả tiền trước:
+  + Chọn 1 người làm “người nhận tiền cuối cùng” (ưu tiên người trả nhiều nhất hoặc theo paymentInfo)
+  + Tất cả công nợ phải quy về người này
+  + Tính phần chênh lệch:
+    chênh_lệch = số_tiền_đã_trả - số_tiền_phải_trả
+
+  + Nếu chênh_lệch > 0:
+    người nhận tiền cuối phải hoàn lại cho người đó
+  + Nếu chênh_lệch < 0:
+    người đó phải chuyển phần thiếu cho người nhận tiền cuối
+
+- KẾT QUẢ CUỐI:
+  CHỈ được phép có 1 người nhận tiền chính trong payment_text
+
+6. RULE CHỐT QUAN TRỌNG:
+- Không được để nhiều người cùng là “người nhận tiền cuối”
+- Không tạo nhiều vòng chuyển tiền
+- Tất cả phải quy về 1 người duy nhất hoặc trường hợp đặc biệt set sẵn
+
+7. FORMAT payment_text:
+
+payment_text phải theo cấu trúc:
+
+✅ Kế hoạch thanh toán
+
+Tổng chi phí: xxx VNĐ (Sân: xxx + Cầu: xxx)
+
+Đã thanh toán:
+• A: xxx VNĐ
+• B: xxx VNĐ
+
+X là người nhận tiền cuối cùng (mọi người chuyển khoản cho X).
+
+Hoàn tiền (nếu có):
+• X chuyển A: xxx VNĐ
+• X chuyển B: xxx VNĐ
+
+Danh sách chuyển tiền cho X:
+• A: xxx VNĐ
+• B: xxx VNĐ
+• C: xxx VNĐ
+
+Ghi chú:
+• ...
+
+8. EXAMPLES:
+
+--- CASE 1: 1 người trả hết / tạm ứng toàn bộ ---
+
+Ni đã trả hết 465.000 VNĐ. Ni là người nhận tiền → số_tiền của Ni = 0.
+Mọi người chuyển tiền cho Ni:
+• Huy: 116.000 VNĐ  → số_tiền của Huy = 116000
+• Harmon: 116.000 VNĐ
+• Hanni: 116.000 VNĐ
+
+
+--- CASE 2: nhiều người tạm ứng, dồn về 1 người ---
+
+Đã thanh toán:
+• Như: 320.000 VNĐ
+• Huy: 364.000 VNĐ
+
+Huy là người nhận tiền cuối cùng (mọi người chuyển khoản cho Huy).
+
+Hoàn tiền:
+• Huy chuyển Như: 257.000 VNĐ
+
+Mọi người chuyển tiền cho Huy:
+• A: 62.000 VNĐ  → số_tiền của A = 62000
+• B: 62.000 VNĐ
+
+
+--- CASE 3: dồn về Như ---
+
+Như là người nhận tiền cuối cùng (mọi người chuyển khoản cho Như).
+
+Hoàn tiền:
+• Như chuyển Huy: 301.000 VNĐ
+
+Mọi người chuyển tiền cho Như:
+• A: 62.000 VNĐ
+• B: 62.000 VNĐ
+
+
+--- CASE 4: set sẵn tiền từng người ---
+
+Đã set sẵn số tiền:
+• A: 50.000 VNĐ
+• B: 45.000 VNĐ
+
+Không chia lại, giữ nguyên giá trị đã set.
+
+
+--- CASE 5: chia theo tiếng ---
+
+• A: 2 tiếng
+• B: 1 tiếng
+
+Tiền mỗi tiếng = (sân + cầu) / số người tiếng đó
+
+A = tổng 2 tiếng
+B = 1 tiếng
+
+9. QUY TẮC VỀ “số_tiền” trong người_đánh (QUAN TRỌNG):
+- số_tiền = số tiền người đó phải CHUYỂN ĐẾN TAY người nhận tiền cuối
+- Người NHẬN TIỀN cuối (người đã bỏ tiền ra trước, đang chờ nhận chuyển khoản): số_tiền = 0
+- Người đã tạm ứng và được hoàn lại toàn bộ/một phần tiền: số_tiền = 0
+- Người bình thường (không tạm ứng, không được set sẵn): “số_tiền” BẮT BUỘC phải lớn hơn 0. TUYỆT ĐỐI không để bằng 0 nếu họ có tham gia đánh.
+- Chỉ bằng 0 khi và chỉ khi: Họ là người nhận tiền cuối, hoặc chi phí phải trả của họ đã được tính toán bằng 0 hợp lệ.
+
+Ví dụ (CASE 1): Ni trả hết 465k, 4 người:
+- Ni (người nhận tiền, mọi người chuyển cho Ni): số_tiền = 0
+- Huy (chuyển tiền cho Ni): số_tiền = 116000
+- Harmon (chuyển tiền cho Ni): số_tiền = 116000
+- Hanni (chuyển tiền cho Ni): số_tiền = 116000
+
+10. QUY TẮC LÀM TRÒN:
+- Tất cả số tiền phải làm tròn xuống đến hàng nghìn gần nhất (floor to nearest 1000)
+- Ví dụ: 62273 → 62000, 68400 → 68000, 257727 → 257000
+- Áp dụng cho cả số_tiền trong người_đánh và tất cả giá trị trong payment_text
+
+11. KIỂM TRA TÍNH NHẤT QUÁN (SANITY CHECK):
+- Tổng số tiền "người_đánh" cần chuyển khoản + Tổng số tiền người thanh toán cuối cùng tự chịu + Số tiền các người tạm ứng khác tự chịu (sau khi trừ phần được hoàn) BẢO ĐẢM phải tương đương với Tổng chi phí buổi tập (chênh lệch tối đa do làm tròn xuống).
+- Nếu phát hiện bất kỳ người chơi bình thường nào có số_tiền = 0 mà không có lý do hợp lý, phải tính toán lại để gán đúng chi phí cho họ.
+
+12. OUTPUT RULE:
+- Chỉ trả JSON
+- Không thêm text ngoài JSON
+- Không giải thích
+`;
+
+  const response = await fetch(
+    "https://api.x.ai/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.XAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "grok-4.3",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Bạn là JSON calculator chuyên nghiệp. Luôn trả về đúng định dạng JSON, không thêm bất kỳ text thừa nào.",
+          },
+          { role: "user", content: promptContent },
+        ],
+        temperature: 0.0,
+        max_tokens: 4000,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Groq API error: ${error}`);
+  }
+
+  const data = await response.json();
+  const aiContent = data.choices[0].message.content.trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(aiContent);
+  } catch (e) {
+    const jsonMatch = aiContent.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      parsed = JSON.parse(jsonMatch[0]);
+    } else {
+      throw new Error(
+        "AI không trả về JSON hợp lệ: " + aiContent.substring(0, 400),
+      );
+    }
+  }
+
+  const result = {
+    "tiền sân": parsed["tiền_sân"] || 0,
+    "tiền cầu": parsed["tiền_cầu"] || 0,
+    tổng: parsed["tổng"] || 0,
+    "người đánh": (parsed["người_đánh"] || []).map((person) => ({
+      tên: person["tên"],
+      số_tiếng: person["số_tiếng"] || 0,
+      số_tiền: Math.floor((person["số_tiền"] || 0) / 1000) * 1000,
+      ghi_chú: person["ghi_chú"] || "",
+    })),
+    payment_text: parsed["payment_text"] || "",
+  };
+
+  // Cập nhật database
+
+  await Category.findByIdAndUpdate(categoryId, {
+    paymentResult: result.payment_text,
+  });
+
+  const normalizeName = (name) =>
+    name
+      .toLowerCase()
+      .replace(/\(.*?\)/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  for (const person of result["người đánh"]) {
+    const participant = participants.find(
+      (p) => normalizeName(p.name) === normalizeName(person["tên"]),
+    );
+    if (participant) {
+      await Participant.findByIdAndUpdate(participant._id, {
+        money: person["số_tiền"],
+      });
+    }
+  }
+
+  return result;
+}
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
@@ -246,7 +447,7 @@ app.post("/api/admin/login", async (req, res) => {
         username: admin.username,
         type: "admin", // Add user type for better validation
       },
-      process.env.JWT_SECRET
+      process.env.JWT_SECRET,
       // No expiresIn option = token never expires
     );
 
@@ -290,11 +491,31 @@ app.get("/api/user/category", async (req, res) => {
   }
 });
 
+// List All Categories (User) - public
+app.get("/api/user/categories", async (req, res) => {
+  try {
+    const categories = await Category.find({ isShowMoney: true }).sort({
+      createdAt: -1,
+    });
+
+    const result = await Promise.all(
+      categories.map(async (category) => {
+        const participants = await Participant.find({ category: category._id });
+        return { ...category.toObject(), participants };
+      }),
+    );
+
+    sendResponse(res, 200, "Fetch categories successfully!", result);
+  } catch (err) {
+    sendResponse(res, 500, "Server error", null);
+  }
+});
+
 // Create Category (Admin)
 app.post("/api/categories", authenticateJWT, async (req, res) => {
   const { name } = req.body;
   if (!name) {
-    return sendResponse(res, 400, "Selected date is required!");
+    return sendResponse(res, 400, "Nhập ngày đi bạn eeiii!");
   }
 
   try {
@@ -354,54 +575,17 @@ app.put(
   async (req, res) => {
     try {
       const { categoryId, participantId } = req.params;
-      const { paymentDone, otherAmount, reason } = req.body;
+      const { isPaid } = req.body;
 
-      // Validate input
-      if (paymentDone !== undefined && typeof paymentDone !== "boolean") {
-        return sendResponse(
-          res,
-          400,
-          "paymentDone must be a boolean value",
-          null
-        );
-      }
-      // if (
-      //   otherAmount !== undefined &&
-      //   (typeof otherAmount !== "number" || otherAmount < 0)
-      // ) {
-      //   return sendResponse(
-      //     res,
-      //     400,
-      //     "otherAmount must be a non-negative number",
-      //     null
-      //   );
-      // }
-      if (paymentDone === undefined && otherAmount === undefined) {
-        return sendResponse(
-          res,
-          400,
-          "At least one of paymentDone or otherAmount is required",
-          null
-        );
+      if (isPaid === undefined || typeof isPaid !== "boolean") {
+        return sendResponse(res, 400, "isPaid must be a boolean value", null);
       }
 
-      // Validate category
       const category = await Category.findById(categoryId);
       if (!category) {
-        return sendResponse(res, 404, "Vote date not found", null);
+        return sendResponse(res, 404, "Category not found", null);
       }
 
-      // Prevent updates if category is not calculated
-      if (!category.isCalculated) {
-        return sendResponse(
-          res,
-          400,
-          "Cannot update participant payment status until expenses are calculated",
-          null
-        );
-      }
-
-      // Find the participant
       const participant = await Participant.findOne({
         _id: participantId,
         category: categoryId,
@@ -411,44 +595,31 @@ app.put(
         return sendResponse(
           res,
           404,
-          "Participant not found in this date",
-          null
+          "Participant not found in this category",
+          null,
         );
       }
 
-      // Prepare update fields
-      const updateFields = {};
-      if (paymentDone !== undefined) {
-        updateFields.paymentDone = paymentDone;
-      }
-      if (otherAmount !== undefined) {
-        updateFields.otherAmount = otherAmount;
-        updateFields.reasonOtherAmount = reason;
-        updateFields.paidAmount =
-          participant.shareAmount - participant.paymentBefore + otherAmount;
-      }
-
-      // Update participant
       const updatedParticipant = await Participant.findByIdAndUpdate(
         participantId,
-        updateFields,
-        { new: true, runValidators: true }
+        { isPaid },
+        { new: true, runValidators: true },
       ).populate("category");
 
       sendResponse(
         res,
         200,
         "Participant payment status updated successfully",
-        updatedParticipant
+        updatedParticipant,
       );
     } catch (err) {
       console.error("Error updating participant payment status:", err.message);
       sendResponse(res, 500, "Server error", null);
     }
-  }
+  },
 );
 
-// New Delete Participant API
+// Delete Participant API
 app.delete(
   "/api/participants/:categoryId/:participantId",
   authenticateJWT,
@@ -456,93 +627,45 @@ app.delete(
     try {
       const { categoryId, participantId } = req.params;
 
-      // Validate category
       const category = await Category.findById(categoryId);
       if (!category) {
-        return sendResponse(res, 404, "Vote date not found", null);
+        return sendResponse(res, 404, "Category not found", null);
       }
 
-      // Find the participant
-      const participant = await Participant.findOne({
+      if (category.isCalculated) {
+        return sendResponse(
+          res,
+          400,
+          "Cannot delete participant after expenses have been calculated",
+          null,
+        );
+      }
+
+      const participant = await Participant.findOneAndDelete({
         _id: participantId,
         category: categoryId,
-      }).populate("category");
+      });
 
       if (!participant) {
         return sendResponse(
           res,
           404,
-          "Participant not found in this date",
-          null
+          "Participant not found in this category",
+          null,
         );
       }
 
-      // Prevent deletion of paid participants only if isCalculated is true
-      if (
-        category.isCalculated &&
-        (participant.paymentDone ||
-          participant.paymentBefore > 0 ||
-          participant.otherAmount > 0)
-      ) {
-        return sendResponse(
-          res,
-          400,
-          "Cannot delete participant who has already paid",
-          null
-        );
-      }
-
-      // Delete the participant (without transaction)
-      await Participant.findOneAndDelete({
-        _id: participantId,
-        category: categoryId,
-      }).populate("category");
-
-      // Get remaining participants and their payments
-      const remainingParticipants = await Participant.find({
-        category: categoryId,
-      });
-
-      const payments = remainingParticipants
-        .filter((p) => p.paymentBefore > 0)
-        .map((p) => ({
-          id: p._id.toString(), // Convert ObjectId to string
-          amount: p.paymentBefore,
-        }));
-
-      // Recalculate expenses if there are payments
-      let expenseResult = null;
-      if (payments.length > 0) {
-        expenseResult = await calculateSharedExpenses(categoryId, payments);
-
-        // Update isCalculated to true only if currently false
-        if (!category.isCalculated) {
-          await Category.findByIdAndUpdate(categoryId, { isCalculated: true });
-        }
-      }
-
-      const response = {
-        message: "Participant deleted successfully",
-        deletedParticipant: participant,
-        expenses: expenseResult,
-      };
-
-      sendResponse(
-        res,
-        200,
-        "Participant deleted and expenses recalculated",
-        response
-      );
+      sendResponse(res, 200, "Participant deleted successfully", participant);
     } catch (err) {
       console.error("Error deleting participant:", err.message);
       sendResponse(res, 500, "Server error", null);
     }
-  }
+  },
 );
 
 // Submit to Join (Public)
 app.post("/api/participants", async (req, res) => {
-  const { name, status, categoryId } = req.body;
+  const { name, status, categoryId, quantity } = req.body;
   if (!name || !status || !categoryId) {
     return sendResponse(res, 400, "Nhập tên đi bạn eeiii!");
   }
@@ -556,7 +679,12 @@ app.post("/api/participants", async (req, res) => {
       return sendResponse(res, 400, "Ngày này không có đánh cầu nha!");
     }
 
-    const participant = new Participant({ name, status, category: categoryId });
+    const participant = new Participant({
+      name,
+      status,
+      category: categoryId,
+      quantity: quantity,
+    });
     await participant.save();
     let message;
     if (status === "tham gia") {
@@ -570,172 +698,187 @@ app.post("/api/participants", async (req, res) => {
   }
 });
 
-// Update Category API
+// Update Category API (only is_selected)
 app.put("/api/categories/:id", authenticateJWT, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, is_selected, payments } = req.body;
+    const { name, is_selected } = req.body;
 
-    // Validate input
-    if (is_selected === undefined && !name && !payments) {
+    if (is_selected === undefined) {
+      return sendResponse(res, 400, "is_selected is required", null);
+    }
+
+    const category = await Category.findById(id);
+    if (!category) {
+      return sendResponse(res, 404, "Category not found", null);
+    }
+
+    if (is_selected === true) {
+      await Category.updateMany({ _id: { $ne: id } }, { is_selected: false });
+    }
+
+    const updatedCategory = await Category.findByIdAndUpdate(
+      id,
+      { name, is_selected: is_selected === true },
+      { new: true, runValidators: true },
+    );
+
+    sendResponse(res, 200, "Category updated successfully", updatedCategory);
+  } catch (err) {
+    console.error("Error updating category:", err.message);
+    sendResponse(res, 500, "Server error", null);
+  }
+});
+
+// Calculate Expenses API
+app.post("/api/categories/:id/calculate", authenticateJWT, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { paymentInfo } = req.body;
+
+    if (!paymentInfo) {
+      return sendResponse(res, 400, "paymentInfo is required", null);
+    }
+
+    const category = await Category.findById(id);
+    if (!category) {
+      return sendResponse(res, 404, "Category not found", null);
+    }
+
+    await Category.findByIdAndUpdate(id, { paymentInfo });
+
+    const expenseResult = await calculateWithGroq(id);
+
+    const updatedCategory = await Category.findByIdAndUpdate(
+      id,
+      { isCalculated: true },
+      { new: true, runValidators: true },
+    );
+
+    sendResponse(res, 200, "Expenses calculated successfully", {
+      category: updatedCategory,
+      expenses: expenseResult,
+    });
+  } catch (err) {
+    console.error("Error calculating expenses:", err.message);
+    sendResponse(res, 500, "Server error", null);
+  }
+});
+
+// List QR Images API (Admin)
+app.get("/api/qr-images", authenticateJWT, async (req, res) => {
+  try {
+    const qrImages = await QrImage.find().sort({ createdAt: -1 });
+    sendResponse(res, 200, "Fetch QR images successfully", qrImages);
+  } catch (err) {
+    console.error("Error fetching QR images:", err.message);
+    sendResponse(res, 500, "Server error", null);
+  }
+});
+
+// Delete QR Image API (Admin)
+app.delete("/api/qr-images/:id", authenticateJWT, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const qrImage = await QrImage.findByIdAndDelete(id);
+    if (!qrImage) {
+      return sendResponse(res, 404, "QR image not found", null);
+    }
+
+    sendResponse(res, 200, "QR image deleted successfully", qrImage);
+  } catch (err) {
+    console.error("Error deleting QR image:", err.message);
+    sendResponse(res, 500, "Server error", null);
+  }
+});
+
+// Export Result API (Admin) - set isShowMoney = true, link QR image to category and save to pool
+app.put("/api/categories/:id/export", authenticateJWT, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { qr_img_id, qr_img_url, qr_img_name } = req.body;
+
+    if (!qr_img_id && !qr_img_url) {
       return sendResponse(
         res,
         400,
-        "At least one of name, is_selected, or payments is required",
-        null
+        "Upload ảnh QR trước khi show kết quả nha",
+        null,
       );
     }
 
-    // Check for duplicate name if name is being updated
-    if (name) {
-      const existingCategory = await Category.findOne({
-        name: name.trim(),
-        _id: { $ne: id },
-      });
-
-      if (existingCategory) {
-        return sendResponse(res, 400, "Vote date name already exists", null);
-      }
+    const category = await Category.findById(id);
+    if (!category) {
+      return sendResponse(res, 404, "Category not found", null);
     }
 
-    const session = await mongoose.startSession();
-    let transactionSuccessful = false;
-
-    try {
-      session.startTransaction();
-
-      // If is_selected is true, set all other categories to false
-      if (is_selected === true) {
-        await Category.updateMany(
-          { _id: { $ne: id } },
-          { is_selected: false },
-          { session }
-        );
-      }
-
-      // Update the specific category
-      const category = await Category.findById(id);
-      if (!category) {
-        await session.abortTransaction();
-        return sendResponse(res, 404, "Vote date not found", null);
-      }
-
-      const updateFields = { name, is_selected: is_selected === true };
-
-      // Calculate shared expenses if payments are provided
-      let expenseResult = null;
-      if (payments) {
-        expenseResult = await calculateSharedExpenses(id, payments);
-      }
-
-      let finalResults = null;
-      if (expenseResult?.statusCode == 400) {
-        finalResults = {
-          message: expenseResult.errors,
-        };
-      } else {
-        finalResults = expenseResult;
-      }
-
-      if (
-        payments &&
-        !category.isCalculated &&
-        expenseResult?.statusCode !== 400
-      ) {
-        updateFields.isCalculated = true; // Set isCalculated only if currently false
-      }
-      const updatedCategory = await Category.findByIdAndUpdate(
-        id,
-        updateFields,
-        { new: true, runValidators: true, session }
+    if (!category.isCalculated) {
+      return sendResponse(
+        res,
+        400,
+        "Expenses have not been calculated yet",
+        null,
       );
-
-      await session.commitTransaction();
-      transactionSuccessful = true;
-
-      const response = {
-        category: updatedCategory,
-        expenses: finalResults,
-      };
-
-      sendResponse(res, 200, "Vote date updated successfully", response);
-    } catch (err) {
-      await session.abortTransaction();
-      // Fallback to non-transaction update
-      if (err.message.includes("Transaction numbers are only allowed")) {
-        console.warn(
-          "Transaction failed, falling back to non-transaction update:",
-          err.message
-        );
-        const category = await Category.findById(id);
-        if (!category) {
-          return sendResponse(res, 404, "Vote date not found", null);
-        }
-
-        const updateFields = { name, is_selected: is_selected === true };
-
-        let expenseResult = null;
-        if (payments) {
-          expenseResult = await calculateSharedExpenses(id, payments);
-          console.log("ex", calculateSharedExpenses(id, payments));
-        }
-
-        let finalResults = null;
-        if (expenseResult?.statusCode == 400) {
-          finalResults = {
-            errors: expenseResult.errors,
-          };
-        } else {
-          finalResults = expenseResult;
-        }
-
-        if (
-          payments &&
-          !category.isCalculated &&
-          expenseResult?.statusCode !== 400
-        ) {
-          updateFields.isCalculated = true; // Set isCalculated only if currently false
-        }
-        const fallbackUpdate = await Category.findByIdAndUpdate(
-          id,
-          updateFields,
-          { new: true, runValidators: true }
-        );
-
-        if (is_selected === true) {
-          await Category.updateMany(
-            { _id: { $ne: id } },
-            { is_selected: false }
-          );
-        }
-
-        const response = {
-          category: fallbackUpdate,
-          expenses: finalResults,
-        };
-
-        if (expenseResult?.statusCode === 400) {
-          return sendResponse(
-            res,
-            400,
-            "Vote date updated unsuccessfully",
-            response
-          );
-        }
-
-        return sendResponse(
-          res,
-          200,
-          "Vote date updated successfully",
-          response
-        );
-      }
-      throw err;
-    } finally {
-      if (!transactionSuccessful) session.endSession();
     }
+
+    let resolvedQrUrl = category.qr_img_url;
+
+    if (qr_img_id) {
+      const qrImage = await QrImage.findById(qr_img_id);
+      if (!qrImage) {
+        return sendResponse(res, 404, "QR image not found", null);
+      }
+      resolvedQrUrl = qrImage.url;
+    } else if (qr_img_url) {
+      let qrImage = await QrImage.findOne({ url: qr_img_url });
+      if (!qrImage) {
+        qrImage = await QrImage.create({
+          url: qr_img_url,
+          name: qr_img_name || "",
+        });
+      }
+      resolvedQrUrl = qrImage.url;
+    }
+
+    const updatedCategory = await Category.findByIdAndUpdate(
+      id,
+      { isShowMoney: true, qr_img_url: resolvedQrUrl },
+      { new: true, runValidators: true },
+    );
+
+    sendResponse(res, 200, "Result exported successfully", updatedCategory);
   } catch (err) {
-    console.error("Error updating category:", err.message);
+    console.error("Error exporting result:", err.message);
+    sendResponse(res, 500, "Server error", null);
+  }
+});
+
+// Get Payment Result (User) - public
+app.get("/api/user/category/:id/result", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const category = await Category.findById(id);
+    if (!category) {
+      return sendResponse(res, 404, "Category not found", null);
+    }
+
+    if (!category.isShowMoney) {
+      return sendResponse(res, 200, "Result is not available yet", null);
+    }
+
+    const participants = await Participant.find({
+      category: id,
+      status: "tham gia",
+    }).select("name money isPaid");
+
+    sendResponse(res, 200, "Get result successfully", {
+      ...category.toObject(),
+      participants,
+    });
+  } catch (err) {
+    console.error("Error getting result:", err.message);
     sendResponse(res, 500, "Server error", null);
   }
 });
@@ -745,13 +888,15 @@ app.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Optionally delete associated participants
-    await Participant.deleteMany({ category: id });
-
-    const deletedCategory = await Category.findByIdAndDelete(id);
-
-    if (!deletedCategory)
+    const category = await Category.findById(id);
+    if (!category)
       return sendResponse(res, 404, "Vote date not found", null);
+
+    if (category.isCalculated)
+      return sendResponse(res, 400, "Cannot delete a vote date that has already been calculated", null);
+
+    await Participant.deleteMany({ category: id });
+    const deletedCategory = await Category.findByIdAndDelete(id);
 
     sendResponse(res, 200, "Vote date deleted successfully", deletedCategory);
   } catch (err) {
@@ -802,7 +947,3 @@ app.post("/api/admin/logout", authenticateJWT, (req, res) => {
       sendResponse(res, 500, "Failed to blacklist token");
     });
 });
-
-// Start Server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
