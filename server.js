@@ -21,20 +21,35 @@ app.use((req, res, next) => {
   next();
 });
 
-// MongoDB Connection
-mongoose.set("bufferCommands", false);
+// MongoDB Connection — cached for Vercel serverless
+let dbConnectionPromise = null;
 
-if (!process.env.MONGODB_URI) {
-  console.error("MONGODB_URI is not set.");
-} else {
-  mongoose
-    .connect(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 10000,
-    })
-    .then(() => console.log("Connected to MongoDB"))
-    .catch((err) => console.error("MongoDB connection error:", err.message));
+function connectDB() {
+  if (mongoose.connection.readyState >= 1) return Promise.resolve();
+  if (!dbConnectionPromise) {
+    dbConnectionPromise = mongoose
+      .connect(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 5000,
+        connectTimeoutMS: 10000,
+      })
+      .then(() => console.log("Connected to MongoDB"))
+      .catch((err) => {
+        dbConnectionPromise = null;
+        throw err;
+      });
+  }
+  return dbConnectionPromise;
 }
+
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    console.error("MongoDB connection error:", err.message);
+    sendResponse(res, 500, "Database connection failed", null);
+  }
+});
 
 if (process.env.NODE_ENV !== "production") {
   app.listen(process.env.PORT || 3000, () =>
