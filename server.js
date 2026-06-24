@@ -31,16 +31,19 @@ app.use(
 );
 app.options("*", cors());
 // MongoDB Connection
-mongoose
-  .connect(process.env.MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000,
-    connectTimeoutMS: 10000,
-    bufferCommands: false,
-  })
-  .then(() => console.log("Connected to MongoDB"))
-  .catch((err) => console.error("MongoDB connection error:", err.message));
+mongoose.set("bufferCommands", false);
+
+if (!process.env.MONGODB_URI) {
+  console.error("MONGODB_URI is not set.");
+} else {
+  mongoose
+    .connect(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 10000,
+    })
+    .then(() => console.log("Connected to MongoDB"))
+    .catch((err) => console.error("MongoDB connection error:", err.message));
+}
 
 if (process.env.NODE_ENV !== "production") {
   app.listen(process.env.PORT || 3000, () =>
