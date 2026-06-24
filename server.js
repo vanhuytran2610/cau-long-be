@@ -29,7 +29,7 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
-app.options("*", cors());
+
 // MongoDB Connection
 mongoose.set("bufferCommands", false);
 
