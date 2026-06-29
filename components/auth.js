@@ -77,6 +77,34 @@ router.post("/api/admin/login", async (req, res) => {
   }
 });
 
+// Logout
+router.post("/api/admin/logout", authenticateJWT, (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return sendResponse(res, 400, req.t("invalid_token"));
+  }
+
+  const decoded = jwt.decode(token, { complete: true });
+  if (!decoded || !decoded.payload) {
+    return sendResponse(res, 400, req.t("invalid_token"));
+  }
+
+  const expiresAt = decoded.payload.exp
+    ? new Date(decoded.payload.exp * 1000)
+    : new Date("2099-12-31");
+
+  const blacklistedToken = new BlacklistedToken({ token, expiresAt });
+
+  blacklistedToken
+    .save()
+    .then(() => sendResponse(res, 200, req.t("admin_logout_success")))
+    .catch((err) => {
+      console.error("Blacklist token error:", err);
+      sendResponse(res, 500, req.t("admin_logout_failed"));
+    });
+});
+
 // Check Authentication
 router.get("/api/admin/check-auth", authenticateJWT, (req, res) => {
   sendResponse(res, 200, req.t("authenticated"), { user: req.user });
