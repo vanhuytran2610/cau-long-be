@@ -1,7 +1,11 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const { sendResponse } = require("../helper.js");
-const { Category, Participant, BlacklistedToken, QrImage } = require("../db_migration.js");
+const {
+  Category,
+  Participant,
+  QrImage,
+} = require("../db_migration.js");
 const { authenticateJWT } = require("./auth.js");
 
 const router = express.Router();
@@ -247,7 +251,9 @@ Ví dụ (CASE 1): Ni trả hết 465k, 4 người:
     if (jsonMatch) {
       parsed = JSON.parse(jsonMatch[0]);
     } else {
-      throw new Error("AI không trả về JSON hợp lệ: " + aiContent.substring(0, 400));
+      throw new Error(
+        "AI không trả về JSON hợp lệ: " + aiContent.substring(0, 400),
+      );
     }
   }
 
@@ -272,7 +278,11 @@ Ví dụ (CASE 1): Ni trả hết 465k, 4 người:
   });
 
   const normalizeName = (name) =>
-    name.toLowerCase().replace(/\(.*?\)/g, "").replace(/\s+/g, " ").trim();
+    name
+      .toLowerCase()
+      .replace(/\(.*?\)/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
 
   for (const person of result["người đánh"]) {
     const participant = participants.find(
@@ -367,7 +377,10 @@ router.post("/api/categories", authenticateJWT, async (req, res) => {
   }
 
   try {
-    const { vi: viName, en: enName } = await syncTranslations(name, req.language);
+    const { vi: viName, en: enName } = await syncTranslations(
+      name,
+      req.language,
+    );
 
     const existingCategory = await Category.findOne({ name: viName });
     if (existingCategory) {
@@ -383,89 +396,161 @@ router.post("/api/categories", authenticateJWT, async (req, res) => {
 });
 
 // List Participants by Category (Admin)
-router.get("/api/participants/:categoryId", authenticateJWT, async (req, res) => {
-  try {
-    const { categoryId } = req.params;
+router.get(
+  "/api/participants/:categoryId",
+  authenticateJWT,
+  async (req, res) => {
+    try {
+      const { categoryId } = req.params;
 
-    const category = await Category.findById(categoryId);
-    if (!category) {
-      return sendResponse(res, 404, req.t("category_not_found"), null);
-    }
+      const category = await Category.findById(categoryId);
+      if (!category) {
+        return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
 
-    const participants = await Participant.find({ category: categoryId }).populate("category");
+      const participants = await Participant.find({
+        category: categoryId,
+      }).populate("category");
 
-    if (!participants.length) {
-      return sendResponse(res, 200, req.t("participant_fetch_success"), {
+      if (!participants.length) {
+        return sendResponse(res, 200, req.t("participant_fetch_success"), {
+          category,
+          participants: [],
+        });
+      }
+
+      sendResponse(res, 200, req.t("participant_fetch_success"), {
         category,
-        participants: [],
+        participants,
       });
+    } catch (err) {
+      console.error("Error retrieving participants:", err.message);
+      sendResponse(res, 500, req.t("participant_fetch_failed"), null);
+    }
+  },
+);
+
+// Add Participant in Admin page
+router.post(
+  "/api/participants/:categoryId",
+  authenticateJWT,
+  async (req, res) => {
+    const { categoryId } = req.params;
+    const { name, status = "tham gia" } = req.body;
+
+    if (!name) {
+      return sendResponse(res, 400, req.t("invalid_participant_name"));
     }
 
-    sendResponse(res, 200, req.t("participant_fetch_success"), { category, participants });
-  } catch (err) {
-    console.error("Error retrieving participants:", err.message);
-    sendResponse(res, 500, req.t("participant_fetch_failed"), null);
-  }
-});
+    if (!["tham gia", "lần sau"].includes(status)) {
+      return sendResponse(res, 400, req.t("invalid_request"));
+    }
+
+    try {
+      const category = await Category.findById(categoryId);
+      if (!category) {
+        return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
+
+      if (category.isCalculated) {
+        return sendResponse(res, 400, req.t("calculated_participant_add_failed"), null);
+      }
+
+      const existingParticipant = await Participant.findOne({
+        name: name,
+        category: categoryId,
+      });
+
+      if (existingParticipant) {
+        return sendResponse(res, 400, req.t("existing_participant"));
+      }
+
+      const new_participant = new Participant({
+        name: name,
+        status: status,
+        category: categoryId,
+      });
+      await new_participant.save();
+      await new_participant.populate("category");
+      sendResponse(res, 201, req.t("participant_added"), new_participant);
+    } catch (err) {
+      sendResponse(res, 500, req.t("participant_add_failed"), null);
+    }
+  },
+);
 
 // Update Participant Payment Status
-router.put("/api/participants/:categoryId/:participantId", authenticateJWT, async (req, res) => {
-  try {
-    const { categoryId, participantId } = req.params;
-    const { isPaid } = req.body;
+router.put(
+  "/api/participants/:categoryId/:participantId",
+  authenticateJWT,
+  async (req, res) => {
+    try {
+      const { categoryId, participantId } = req.params;
+      const { isPaid } = req.body;
 
-    if (isPaid === undefined || typeof isPaid !== "boolean") {
-      return sendResponse(res, 400, req.t("invalid_request"), null);
+      if (isPaid === undefined || typeof isPaid !== "boolean") {
+        return sendResponse(res, 400, req.t("invalid_request"), null);
+      }
+
+      const category = await Category.findById(categoryId);
+      if (!category) {
+        return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
+
+      const participant = await Participant.findOne({
+        _id: participantId,
+        category: categoryId,
+      });
+      if (!participant) {
+        return sendResponse(res, 404, req.t("participant_not_found"), null);
+      }
+
+      const updatedParticipant = await Participant.findByIdAndUpdate(
+        participantId,
+        { isPaid },
+        { new: true, runValidators: true },
+      ).populate("category");
+
+      sendResponse(res, 200, req.t("participant_updated"), updatedParticipant);
+    } catch (err) {
+      console.error("Error updating participant payment status:", err.message);
+      sendResponse(res, 500, req.t("participant_update_failed"), null);
     }
-
-    const category = await Category.findById(categoryId);
-    if (!category) {
-      return sendResponse(res, 404, req.t("category_not_found"), null);
-    }
-
-    const participant = await Participant.findOne({ _id: participantId, category: categoryId });
-    if (!participant) {
-      return sendResponse(res, 404, req.t("participant_not_found"), null);
-    }
-
-    const updatedParticipant = await Participant.findByIdAndUpdate(
-      participantId,
-      { isPaid },
-      { new: true, runValidators: true },
-    ).populate("category");
-
-    sendResponse(res, 200, req.t("participant_updated"), updatedParticipant);
-  } catch (err) {
-    console.error("Error updating participant payment status:", err.message);
-    sendResponse(res, 500, req.t("participant_update_failed"), null);
-  }
-});
+  },
+);
 
 // Delete Participant
-router.delete("/api/participants/:categoryId/:participantId", authenticateJWT, async (req, res) => {
-  try {
-    const { categoryId, participantId } = req.params;
+router.delete(
+  "/api/participants/:categoryId/:participantId",
+  authenticateJWT,
+  async (req, res) => {
+    try {
+      const { categoryId, participantId } = req.params;
 
-    const category = await Category.findById(categoryId);
-    if (!category) {
-      return sendResponse(res, 404, req.t("category_not_found"), null);
+      const category = await Category.findById(categoryId);
+      if (!category) {
+        return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
+
+      if (category.isCalculated) {
+        return sendResponse(res, 400, req.t("calculated_participant_delete_failed"), null);
+      }
+
+      const participant = await Participant.findOneAndDelete({
+        _id: participantId,
+        category: categoryId,
+      });
+      if (!participant) {
+        return sendResponse(res, 404, req.t("participant_not_found"), null);
+      }
+
+      sendResponse(res, 200, req.t("participant_deleted"), participant);
+    } catch (err) {
+      console.error("Error deleting participant:", err.message);
+      sendResponse(res, 500, req.t("participant_delete_failed"), null);
     }
-
-    if (category.isCalculated) {
-      return sendResponse(res, 400, req.t("category_is_calculated"), null);
-    }
-
-    const participant = await Participant.findOneAndDelete({ _id: participantId, category: categoryId });
-    if (!participant) {
-      return sendResponse(res, 404, req.t("participant_not_found"), null);
-    }
-
-    sendResponse(res, 200, req.t("participant_deleted"), participant);
-  } catch (err) {
-    console.error("Error deleting participant:", err.message);
-    sendResponse(res, 500, req.t("participant_delete_failed"), null);
-  }
-});
+  },
+);
 
 // Update Category (name and is_selected)
 router.put("/api/categories/:id", authenticateJWT, async (req, res) => {
@@ -488,7 +573,10 @@ router.put("/api/categories/:id", authenticateJWT, async (req, res) => {
 
     const nameUpdate = {};
     if (name) {
-      const { vi: viName, en: enName } = await syncTranslations(name, req.language);
+      const { vi: viName, en: enName } = await syncTranslations(
+        name,
+        req.language,
+      );
       nameUpdate.name = viName;
       nameUpdate.name_en = enName;
     }
@@ -506,40 +594,50 @@ router.put("/api/categories/:id", authenticateJWT, async (req, res) => {
 });
 
 // Calculate Expenses
-router.post("/api/categories/:id/calculate", authenticateJWT, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { paymentInfo } = req.body;
+router.post(
+  "/api/categories/:id/calculate",
+  authenticateJWT,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { paymentInfo } = req.body;
 
-    if (!paymentInfo) {
-      return sendResponse(res, 400, req.t("payment_info_missing"), null);
+      if (!paymentInfo) {
+        return sendResponse(res, 400, req.t("payment_info_missing"), null);
+      }
+
+      const category = await Category.findById(id);
+      if (!category) {
+        return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
+
+      const { vi: viPaymentInfo, en: enPaymentInfo } = await syncTranslations(
+        paymentInfo,
+        req.language,
+      );
+      await Category.findByIdAndUpdate(id, {
+        paymentInfo: viPaymentInfo,
+        paymentInfo_en: enPaymentInfo,
+      });
+
+      const expenseResult = await calculateWithGrok(id);
+
+      const updatedCategory = await Category.findByIdAndUpdate(
+        id,
+        { isCalculated: true },
+        { new: true, runValidators: true },
+      );
+
+      sendResponse(res, 200, req.t("expenses_calculated"), {
+        category: updatedCategory,
+        expenses: expenseResult,
+      });
+    } catch (err) {
+      console.error("Error calculating expenses:", err.message);
+      sendResponse(res, 500, req.t("server_error"), null);
     }
-
-    const category = await Category.findById(id);
-    if (!category) {
-      return sendResponse(res, 404, req.t("category_not_found"), null);
-    }
-
-    const { vi: viPaymentInfo, en: enPaymentInfo } = await syncTranslations(paymentInfo, req.language);
-    await Category.findByIdAndUpdate(id, { paymentInfo: viPaymentInfo, paymentInfo_en: enPaymentInfo });
-
-    const expenseResult = await calculateWithGrok(id);
-
-    const updatedCategory = await Category.findByIdAndUpdate(
-      id,
-      { isCalculated: true },
-      { new: true, runValidators: true },
-    );
-
-    sendResponse(res, 200, req.t("expenses_calculated"), {
-      category: updatedCategory,
-      expenses: expenseResult,
-    });
-  } catch (err) {
-    console.error("Error calculating expenses:", err.message);
-    sendResponse(res, 500, req.t("server_error"), null);
-  }
-});
+  },
+);
 
 // List QR Images
 router.get("/api/qr-images", authenticateJWT, async (req, res) => {
@@ -599,7 +697,10 @@ router.put("/api/categories/:id/export", authenticateJWT, async (req, res) => {
     } else if (qr_img_url) {
       let qrImage = await QrImage.findOne({ url: qr_img_url });
       if (!qrImage) {
-        qrImage = await QrImage.create({ url: qr_img_url, name: qr_img_name || "" });
+        qrImage = await QrImage.create({
+          url: qr_img_url,
+          name: qr_img_name || "",
+        });
       }
       resolvedQrUrl = qrImage.url;
     }
@@ -623,7 +724,8 @@ router.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
     const { id } = req.params;
 
     const category = await Category.findById(id);
-    if (!category) return sendResponse(res, 404, req.t("category_not_found"), null);
+    if (!category)
+      return sendResponse(res, 404, req.t("category_not_found"), null);
 
     if (category.isCalculated)
       return sendResponse(res, 400, req.t("category_is_calculated"), null);
@@ -636,34 +738,6 @@ router.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
     console.error("Error deleting category:", err.message);
     sendResponse(res, 500, req.t("server_error"), null);
   }
-});
-
-// Logout
-router.post("/api/admin/logout", authenticateJWT, (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
-
-  if (!token) {
-    return sendResponse(res, 400, req.t("invalid_token"));
-  }
-
-  const decoded = jwt.decode(token, { complete: true });
-  if (!decoded || !decoded.payload) {
-    return sendResponse(res, 400, req.t("invalid_token"));
-  }
-
-  const expiresAt = decoded.payload.exp
-    ? new Date(decoded.payload.exp * 1000)
-    : new Date("2099-12-31");
-
-  const blacklistedToken = new BlacklistedToken({ token, expiresAt });
-
-  blacklistedToken
-    .save()
-    .then(() => sendResponse(res, 200, req.t("admin_logout_success")))
-    .catch((err) => {
-      console.error("Blacklist token error:", err);
-      sendResponse(res, 500, req.t("admin_logout_failed"));
-    });
 });
 
 module.exports = router;
