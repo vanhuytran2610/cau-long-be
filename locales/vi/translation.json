@@ -69,5 +69,6 @@
     "participant_join_success": "Oke, hẹn gặp bạn trên sân cầu nha!",
     "participant_next_time": "Hẹn bạn lần sau nha!",
     "result_unavailable": "Kết quả chưa được công bố",
-    "get_result_success": "Lấy kết quả thành công"
+    "get_result_success": "Lấy kết quả thành công",
+    "slots_full": "Hết slot rồi nha!!!"
 }
