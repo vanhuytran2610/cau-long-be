@@ -1,8 +1,18 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
-const { sendResponse } = require("../helper.js");
+const {
+  sendResponse,
+  applyLanguage,
+  translateToEnglish,
+  translateToVietnamese,
+  extractGenderCounts,
+  applyLanguageForParticipant,
+  syncCategoryQuantity,
+  syncTranslations,
+} = require("../helper.js");
 const {
   Category,
+  CategoryQuantity,
   Participant,
   QrImage,
 } = require("../db_migration.js");
@@ -270,13 +280,6 @@ Ví dụ (CASE 1): Ni trả hết 465k, 4 người:
     payment_text: parsed["payment_text"] || "",
   };
 
-  const paymentResult_en = await translateToEnglish(result.payment_text);
-
-  await Category.findByIdAndUpdate(categoryId, {
-    paymentResult: result.payment_text,
-    paymentResult_en,
-  });
-
   const normalizeName = (name) =>
     name
       .toLowerCase()
@@ -284,86 +287,67 @@ Ví dụ (CASE 1): Ni trả hết 465k, 4 người:
       .replace(/\s+/g, " ")
       .trim();
 
-  for (const person of result["người đánh"]) {
-    const participant = participants.find(
-      (p) => normalizeName(p.name) === normalizeName(person["tên"]),
-    );
-    if (participant) {
-      await Participant.findByIdAndUpdate(participant._id, {
-        money: person["số_tiền"],
-      });
-    }
-  }
+  const [paymentResult_en] = await Promise.all([
+    translateToEnglish(result.payment_text),
+    Promise.all(
+      result["người đánh"].map((person) => {
+        const participant = participants.find(
+          (p) => normalizeName(p.name) === normalizeName(person["tên"]),
+        );
+        if (participant) {
+          return Participant.findByIdAndUpdate(participant._id, {
+            money: person["số_tiền"],
+          });
+        }
+      }),
+    ),
+  ]);
+
+  await Category.findByIdAndUpdate(categoryId, {
+    paymentResult: result.payment_text,
+    paymentResult_en,
+  });
 
   return result;
-}
-
-async function translateToEnglish(text) {
-  if (!text) return "";
-  const response = await fetch("https://api.x.ai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.XAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "grok-4.3",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a translator. Translate the Vietnamese payment plan text to English. Keep all numbers, names, currency amounts, and formatting unchanged. Return only the translated text.",
-        },
-        { role: "user", content: text },
-      ],
-      temperature: 0.0,
-      max_tokens: 2000,
-    }),
-  });
-  if (!response.ok) return "";
-  const data = await response.json();
-  return data.choices[0]?.message?.content?.trim() || "";
-}
-
-async function translateToVietnamese(text) {
-  if (!text) return "";
-  const response = await fetch("https://api.x.ai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.XAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "grok-4.3",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a translator. Translate the given English text to Vietnamese. Keep all numbers, names, currency amounts, and formatting unchanged. Return only the translated text.",
-        },
-        { role: "user", content: text },
-      ],
-      temperature: 0.0,
-      max_tokens: 2000,
-    }),
-  });
-  if (!response.ok) return "";
-  const data = await response.json();
-  return data.choices[0]?.message?.content?.trim() || "";
-}
-
-async function syncTranslations(text, lang) {
-  if (lang === "en") {
-    return { vi: await translateToVietnamese(text), en: text };
-  }
-  return { vi: text, en: await translateToEnglish(text) };
 }
 
 // List Categories (Admin)
 router.get("/api/categories", authenticateJWT, async (req, res) => {
   try {
     const categories = await Category.find().sort({ createdAt: -1 });
-    sendResponse(res, 200, req.t("category_fetch_success"), categories);
+    const categoryIds = categories.map((c) => c._id);
+    const quantities = await CategoryQuantity.find({
+      category_id: { $in: categoryIds },
+    });
+    const quantityMap = {};
+    for (const q of quantities) {
+      quantityMap[q.category_id.toString()] = q;
+    }
+    const result = categories.map((cat) => ({
+      ...applyLanguage(cat.toObject(), req.language),
+      quantity: quantityMap[cat._id.toString()] || null,
+    }));
+    sendResponse(res, 200, req.t("category_fetch_success"), result);
+  } catch (err) {
+    sendResponse(res, 500, req.t("category_fetch_failed"), null);
+  }
+});
+
+// Get Category by ID (Admin)
+router.get("/api/categories/:categoryId", authenticateJWT, async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const [category, quantity] = await Promise.all([
+      Category.findById(categoryId),
+      CategoryQuantity.findOne({ category_id: categoryId }),
+    ]);
+    if (!category) {
+      return sendResponse(res, 404, req.t("category_not_found"), null);
+    }
+    sendResponse(res, 200, req.t("category_fetch_success"), {
+      ...applyLanguage(category.toObject(), req.language),
+      quantity: quantity || null,
+    });
   } catch (err) {
     sendResponse(res, 500, req.t("category_fetch_failed"), null);
   }
@@ -371,25 +355,60 @@ router.get("/api/categories", authenticateJWT, async (req, res) => {
 
 // Create Category (Admin)
 router.post("/api/categories", authenticateJWT, async (req, res) => {
-  const { name } = req.body;
+  const { name, content, is_selected = false } = req.body;
   if (!name) {
     return sendResponse(res, 400, req.t("invalid_category_name"));
   }
 
   try {
-    const { vi: viName, en: enName } = await syncTranslations(
-      name,
-      req.language,
-    );
+    const [nameResult, contentResult] = await Promise.all([
+      syncTranslations(name, req.language),
+      content ? syncTranslations(content, req.language) : Promise.resolve({ vi: "", en: "" }),
+    ]);
+    const { vi: viName, en: enName } = nameResult;
+    const { vi: viContent, en: enContent } = contentResult;
 
     const existingCategory = await Category.findOne({ name: viName });
     if (existingCategory) {
       return sendResponse(res, 400, req.t("existing_category"));
     }
 
-    const category = new Category({ name: viName, name_en: enName });
+    let male_total = 0;
+    let female_total = 0;
+
+    if (content) {
+      const counts = await extractGenderCounts(viContent || enContent);
+      male_total = counts.male_total;
+      female_total = counts.female_total;
+    }
+
+    const category = new Category({
+      name: viName,
+      name_en: enName,
+      content: viContent,
+      content_en: enContent,
+      is_selected: is_selected === true,
+    });
     await category.save();
-    sendResponse(res, 201, req.t("category_created"), category);
+
+    if (is_selected === true) {
+      await Category.updateMany({ _id: { $ne: category._id } }, { is_selected: false });
+    }
+
+    const quantity = await CategoryQuantity.create({
+      category_id: category._id,
+      male_total,
+      female_total,
+      male_current: 0,
+      female_current: 0,
+      male_remain: male_total,
+      female_remain: female_total,
+    });
+
+    sendResponse(res, 201, req.t("category_created"), {
+      ...category.toObject(),
+      quantity,
+    });
   } catch (err) {
     sendResponse(res, 500, req.t("category_creation_failed"), null);
   }
@@ -403,25 +422,34 @@ router.get(
     try {
       const { categoryId } = req.params;
 
-      const category = await Category.findById(categoryId);
+      const [category, participants, quantity] = await Promise.all([
+        Category.findById(categoryId),
+        Participant.find({ category: categoryId }).populate("category"),
+        CategoryQuantity.findOne({ category_id: categoryId }),
+      ]);
+
       if (!category) {
         return sendResponse(res, 404, req.t("category_not_found"), null);
       }
 
-      const participants = await Participant.find({
-        category: categoryId,
-      }).populate("category");
-
       if (!participants.length) {
         return sendResponse(res, 200, req.t("participant_fetch_success"), {
-          category,
+          category: {
+            ...applyLanguage(category.toObject(), req.language),
+            quantity,
+          },
           participants: [],
         });
       }
 
       sendResponse(res, 200, req.t("participant_fetch_success"), {
-        category,
-        participants,
+        category: {
+          ...applyLanguage(category.toObject(), req.language),
+          quantity,
+        },
+        participants: participants.map((p) =>
+          applyLanguageForParticipant(p.toObject(), req.language),
+        ),
       });
     } catch (err) {
       console.error("Error retrieving participants:", err.message);
@@ -436,7 +464,7 @@ router.post(
   authenticateJWT,
   async (req, res) => {
     const { categoryId } = req.params;
-    const { name, status = "tham gia" } = req.body;
+    const { name, status = "tham gia", level, gender } = req.body;
 
     if (!name) {
       return sendResponse(res, 400, req.t("invalid_participant_name"));
@@ -446,6 +474,16 @@ router.post(
       return sendResponse(res, 400, req.t("invalid_request"));
     }
 
+    const GENDER_VI = { nam: "nam", nữ: "nữ", male: "nam", female: "nữ" };
+    const GENDER_EN = {
+      nam: "male",
+      nữ: "female",
+      male: "male",
+      female: "female",
+    };
+    const viGender = GENDER_VI[gender] || "";
+    const enGender = GENDER_EN[gender] || "";
+
     try {
       const category = await Category.findById(categoryId);
       if (!category) {
@@ -453,7 +491,12 @@ router.post(
       }
 
       if (category.isCalculated) {
-        return sendResponse(res, 400, req.t("calculated_participant_add_failed"), null);
+        return sendResponse(
+          res,
+          400,
+          req.t("calculated_participant_add_failed"),
+          null,
+        );
       }
 
       const existingParticipant = await Participant.findOne({
@@ -465,10 +508,45 @@ router.post(
         return sendResponse(res, 400, req.t("existing_participant"));
       }
 
+      // Atomic slot check-and-decrement for "tham gia" submissions with gender
+      if (
+        status === "tham gia" &&
+        viGender &&
+        ["nam", "nữ"].includes(viGender)
+      ) {
+        const isMale = viGender === "nam";
+        const remainField = isMale ? "male_remain" : "female_remain";
+        const currentField = isMale ? "male_current" : "female_current";
+
+        const quantityDoc = await CategoryQuantity.findOne({
+          category_id: categoryId,
+        });
+        if (quantityDoc) {
+          const totalField = isMale ? "male_total" : "female_total";
+          if (quantityDoc[totalField] > 0) {
+            const updated = await CategoryQuantity.findOneAndUpdate(
+              { category_id: categoryId, [remainField]: { $gt: 0 } },
+              { $inc: { [currentField]: 1, [remainField]: -1 } },
+              { new: true },
+            );
+            if (!updated) {
+              return sendResponse(
+                res,
+                400,
+                req.t("slots_full") || "No remaining slots for this gender",
+              );
+            }
+          }
+        }
+      }
+
       const new_participant = new Participant({
         name: name,
         status: status,
         category: categoryId,
+        level: level || "",
+        gender: viGender,
+        gender_en: enGender,
       });
       await new_participant.save();
       await new_participant.populate("category");
@@ -533,7 +611,12 @@ router.delete(
       }
 
       if (category.isCalculated) {
-        return sendResponse(res, 400, req.t("calculated_participant_delete_failed"), null);
+        return sendResponse(
+          res,
+          400,
+          req.t("calculated_participant_delete_failed"),
+          null,
+        );
       }
 
       const participant = await Participant.findOneAndDelete({
@@ -544,6 +627,30 @@ router.delete(
         return sendResponse(res, 404, req.t("participant_not_found"), null);
       }
 
+      if (
+        participant.status === "tham gia" &&
+        ["nam", "nữ"].includes(participant.gender)
+      ) {
+        const isMale = participant.gender === "nam";
+        const quantityDoc = await CategoryQuantity.findOne({
+          category_id: categoryId,
+        });
+        if (quantityDoc) {
+          const totalField = isMale ? "male_total" : "female_total";
+          if (quantityDoc[totalField] > 0) {
+            await CategoryQuantity.findOneAndUpdate(
+              { category_id: categoryId },
+              {
+                $inc: {
+                  [isMale ? "male_current" : "female_current"]: -1,
+                  [isMale ? "male_remain" : "female_remain"]: 1,
+                },
+              },
+            );
+          }
+        }
+      }
+
       sendResponse(res, 200, req.t("participant_deleted"), participant);
     } catch (err) {
       console.error("Error deleting participant:", err.message);
@@ -552,11 +659,11 @@ router.delete(
   },
 );
 
-// Update Category (name and is_selected)
+// Update Category (name, is_selected, content)
 router.put("/api/categories/:id", authenticateJWT, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, is_selected } = req.body;
+    const { name, is_selected, content } = req.body;
 
     if (is_selected === undefined) {
       return sendResponse(res, 400, req.t("is_selected"), null);
@@ -571,24 +678,72 @@ router.put("/api/categories/:id", authenticateJWT, async (req, res) => {
       await Category.updateMany({ _id: { $ne: id } }, { is_selected: false });
     }
 
-    const nameUpdate = {};
-    if (name) {
-      const { vi: viName, en: enName } = await syncTranslations(
-        name,
-        req.language,
-      );
-      nameUpdate.name = viName;
-      nameUpdate.name_en = enName;
+    const updateFields = { is_selected: is_selected === true };
+
+    const currentContent = req.language === "en" ? category.content_en : category.content;
+    const contentChanged = content !== undefined && content !== "" && content !== currentContent;
+
+    const [nameResult, contentResult] = await Promise.all([
+      name ? syncTranslations(name, req.language) : Promise.resolve(null),
+      contentChanged ? syncTranslations(content, req.language) : Promise.resolve(null),
+    ]);
+
+    if (name && nameResult) {
+      const { vi: viName, en: enName } = nameResult;
+      const category_name = await Category.findOne({ name: viName });
+      if (category_name && category_name._id.toString() !== id) {
+        return sendResponse(res, 400, req.t("existing_category"), null);
+      }
+      updateFields.name = viName;
+      updateFields.name_en = enName;
     }
 
-    const updatedCategory = await Category.findByIdAndUpdate(
-      id,
-      { ...nameUpdate, is_selected: is_selected === true },
-      { new: true, runValidators: true },
-    );
+    if (contentChanged && contentResult) {
+      const { vi: viContent, en: enContent } = contentResult;
+      updateFields.content = viContent;
+      updateFields.content_en = enContent;
 
-    sendResponse(res, 200, req.t("category_updated"), updatedCategory);
+      const counts = await extractGenderCounts(viContent || enContent);
+      const existing = await CategoryQuantity.findOne({ category_id: id });
+      if (existing) {
+        const male_current = existing.male_current;
+        const female_current = existing.female_current;
+        await CategoryQuantity.findOneAndUpdate(
+          { category_id: id },
+          {
+            male_total: counts.male_total,
+            female_total: counts.female_total,
+            male_remain: Math.max(0, counts.male_total - male_current),
+            female_remain: Math.max(0, counts.female_total - female_current),
+          },
+        );
+      } else {
+        await CategoryQuantity.create({
+          category_id: id,
+          male_total: counts.male_total,
+          female_total: counts.female_total,
+          male_current: 0,
+          female_current: 0,
+          male_remain: counts.male_total,
+          female_remain: counts.female_total,
+        });
+      }
+    } else if (content === "") {
+      updateFields.content = "";
+      updateFields.content_en = "";
+    }
+
+    const [updatedCategory, quantity] = await Promise.all([
+      Category.findByIdAndUpdate(id, updateFields, { new: true, runValidators: true }),
+      CategoryQuantity.findOne({ category_id: id }),
+    ]);
+
+    sendResponse(res, 200, req.t("category_updated"), {
+      ...updatedCategory.toObject(),
+      quantity,
+    });
   } catch (err) {
+    console.error("Update category error:", err.message);
     sendResponse(res, 500, req.t("category_update_failed"), null);
   }
 });
@@ -731,6 +886,7 @@ router.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
       return sendResponse(res, 400, req.t("category_is_calculated"), null);
 
     await Participant.deleteMany({ category: id });
+    await CategoryQuantity.findOneAndDelete({ category_id: id });
     const deletedCategory = await Category.findByIdAndDelete(id);
 
     sendResponse(res, 200, req.t("category_deleted"), deletedCategory);

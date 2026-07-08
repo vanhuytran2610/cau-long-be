@@ -69,5 +69,6 @@
     "result_unavailable": "Result is not available yet",
     "get_result_success": "Get result successfully",
     "calculated_participant_add_failed": "Failed to add participant because this date has been calculated",
-    "calculated_participant_delete_failed": "Failed to delete participant because this date has been calculated"
+    "calculated_participant_delete_failed": "Failed to delete participant because this date has been calculated",
+    "slots_full": "No remaining slots!!!"
 }
