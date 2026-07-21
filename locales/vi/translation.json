@@ -70,5 +70,12 @@
     "participant_next_time": "Hẹn bạn lần sau nha!",
     "result_unavailable": "Kết quả chưa được công bố",
     "get_result_success": "Lấy kết quả thành công",
-    "slots_full": "Hết slot rồi nha!!!"
+    "slots_full": "Hết slot rồi nha!!!",
+    "token_expired": "Phiên đăng nhập đã hết hạn. Vui lòng làm mới token.",
+    "refresh_token_invalid": "Refresh token không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.",
+    "refresh_token_missing": "Vui lòng cung cấp refresh token.",
+    "refresh_success": "Làm mới token thành công.",
+    "admin_login_not_authorized": "Bạn không có quyền truy cập vào trang quản trị viên.",
+    "forbidden": "Bạn không có quyền thực hiện thao tác này",
+    "category_not_selected": "Buổi đánh này hiện không nhận đăng ký!"
 }
