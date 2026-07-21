@@ -70,5 +70,12 @@
     "get_result_success": "Get result successfully",
     "calculated_participant_add_failed": "Failed to add participant because this date has been calculated",
     "calculated_participant_delete_failed": "Failed to delete participant because this date has been calculated",
-    "slots_full": "No remaining slots!!!"
+    "slots_full": "No remaining slots!!!",
+    "token_expired": "Your session has expired. Please refresh your token.",
+    "refresh_token_invalid": "Invalid or expired refresh token. Please log in again.",
+    "refresh_token_missing": "Refresh token is required.",
+    "refresh_success": "Token refreshed successfully.",
+    "admin_login_not_authorized": "You are not authorized to access the admin page.",
+    "forbidden": "You don't have permission to perform this action",
+    "category_not_selected": "This session is not accepting registrations!"
 }

@@ -344,6 +344,11 @@ router.get("/api/categories/:categoryId", authenticateJWT, async (req, res) => {
     if (!category) {
       return sendResponse(res, 404, req.t("category_not_found"), null);
     }
+
+    // if (!category.created_by || category.created_by.toString() !== req.user.id) {
+    //   return sendResponse(res, 403, req.t("forbidden"), null);
+    // }
+
     sendResponse(res, 200, req.t("category_fetch_success"), {
       ...applyLanguage(category.toObject(), req.language),
       quantity: quantity || null,
@@ -363,7 +368,9 @@ router.post("/api/categories", authenticateJWT, async (req, res) => {
   try {
     const [nameResult, contentResult] = await Promise.all([
       syncTranslations(name, req.language),
-      content ? syncTranslations(content, req.language) : Promise.resolve({ vi: "", en: "" }),
+      content
+        ? syncTranslations(content, req.language)
+        : Promise.resolve({ vi: "", en: "" }),
     ]);
     const { vi: viName, en: enName } = nameResult;
     const { vi: viContent, en: enContent } = contentResult;
@@ -388,11 +395,15 @@ router.post("/api/categories", authenticateJWT, async (req, res) => {
       content: viContent,
       content_en: enContent,
       is_selected: is_selected === true,
+      created_by: req.user.id,
     });
     await category.save();
 
     if (is_selected === true) {
-      await Category.updateMany({ _id: { $ne: category._id } }, { is_selected: false });
+      await Category.updateMany(
+        { _id: { $ne: category._id }, created_by: req.user.id },
+        { is_selected: false },
+      );
     }
 
     const quantity = await CategoryQuantity.create({
@@ -430,6 +441,10 @@ router.get(
 
       if (!category) {
         return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
+
+      if (!category.created_by || category.created_by.toString() !== req.user.id) {
+        return sendResponse(res, 403, req.t("forbidden"), null);
       }
 
       if (!participants.length) {
@@ -488,6 +503,10 @@ router.post(
       const category = await Category.findById(categoryId);
       if (!category) {
         return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
+
+      if (!category.created_by || category.created_by.toString() !== req.user.id) {
+        return sendResponse(res, 403, req.t("forbidden"), null);
       }
 
       if (category.isCalculated) {
@@ -575,6 +594,10 @@ router.put(
         return sendResponse(res, 404, req.t("category_not_found"), null);
       }
 
+      if (!category.created_by || category.created_by.toString() !== req.user.id) {
+        return sendResponse(res, 403, req.t("forbidden"), null);
+      }
+
       const participant = await Participant.findOne({
         _id: participantId,
         category: categoryId,
@@ -608,6 +631,10 @@ router.delete(
       const category = await Category.findById(categoryId);
       if (!category) {
         return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
+
+      if (!category.created_by || category.created_by.toString() !== req.user.id) {
+        return sendResponse(res, 403, req.t("forbidden"), null);
       }
 
       if (category.isCalculated) {
@@ -674,18 +701,26 @@ router.put("/api/categories/:id", authenticateJWT, async (req, res) => {
       return sendResponse(res, 404, req.t("category_not_found"), null);
     }
 
+    if (!category.created_by || category.created_by.toString() !== req.user.id) {
+      return sendResponse(res, 403, req.t("forbidden"), null);
+    }
+
     if (is_selected === true) {
-      await Category.updateMany({ _id: { $ne: id } }, { is_selected: false });
+      await Category.updateMany({ _id: { $ne: id }, created_by: req.user.id }, { is_selected: false });
     }
 
     const updateFields = { is_selected: is_selected === true };
 
-    const currentContent = req.language === "en" ? category.content_en : category.content;
-    const contentChanged = content !== undefined && content !== "" && content !== currentContent;
+    const currentContent =
+      req.language === "en" ? category.content_en : category.content;
+    const contentChanged =
+      content !== undefined && content !== "" && content !== currentContent;
 
     const [nameResult, contentResult] = await Promise.all([
       name ? syncTranslations(name, req.language) : Promise.resolve(null),
-      contentChanged ? syncTranslations(content, req.language) : Promise.resolve(null),
+      contentChanged
+        ? syncTranslations(content, req.language)
+        : Promise.resolve(null),
     ]);
 
     if (name && nameResult) {
@@ -734,7 +769,10 @@ router.put("/api/categories/:id", authenticateJWT, async (req, res) => {
     }
 
     const [updatedCategory, quantity] = await Promise.all([
-      Category.findByIdAndUpdate(id, updateFields, { new: true, runValidators: true }),
+      Category.findByIdAndUpdate(id, updateFields, {
+        new: true,
+        runValidators: true,
+      }),
       CategoryQuantity.findOne({ category_id: id }),
     ]);
 
@@ -764,6 +802,10 @@ router.post(
       const category = await Category.findById(id);
       if (!category) {
         return sendResponse(res, 404, req.t("category_not_found"), null);
+      }
+
+      if (!category.created_by || category.created_by.toString() !== req.user.id) {
+        return sendResponse(res, 403, req.t("forbidden"), null);
       }
 
       const { vi: viPaymentInfo, en: enPaymentInfo } = await syncTranslations(
@@ -837,6 +879,10 @@ router.put("/api/categories/:id/export", authenticateJWT, async (req, res) => {
       return sendResponse(res, 404, req.t("category_not_found"), null);
     }
 
+    if (!category.created_by || category.created_by.toString() !== req.user.id) {
+      return sendResponse(res, 403, req.t("forbidden"), null);
+    }
+
     if (!category.isCalculated) {
       return sendResponse(res, 400, req.t("export_no_calculation"), null);
     }
@@ -881,6 +927,9 @@ router.delete("/api/categories/:id", authenticateJWT, async (req, res) => {
     const category = await Category.findById(id);
     if (!category)
       return sendResponse(res, 404, req.t("category_not_found"), null);
+
+    if (!category.created_by || category.created_by.toString() !== req.user.id)
+      return sendResponse(res, 403, req.t("forbidden"), null);
 
     if (category.isCalculated)
       return sendResponse(res, 400, req.t("category_is_calculated"), null);
