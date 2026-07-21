@@ -21,6 +21,7 @@ const categorySchema = new mongoose.Schema(
     qr_img_url: { type: String, default: "" }, // Optional QR code image URL
     paymentResult: { type: String, default: "" },
     paymentResult_en: { type: String, default: "" },
+    created_by: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
   },
   { timestamps: true },
 );
@@ -82,6 +83,14 @@ const BlacklistedToken = mongoose.model(
   blacklistedTokenSchema,
 );
 
+const refreshTokenSchema = new mongoose.Schema({
+  token: { type: String, required: true, unique: true },
+  adminId: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", required: true },
+  expiresAt: { type: Date, required: true },
+});
+refreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+const RefreshToken = mongoose.model("RefreshToken", refreshTokenSchema);
+
 const qrImageSchema = new mongoose.Schema(
   {
     url: { type: String, required: true, unique: true },
@@ -91,11 +100,24 @@ const qrImageSchema = new mongoose.Schema(
 );
 const QrImage = mongoose.model("QrImage", qrImageSchema);
 
+const messageSchema = new mongoose.Schema(
+  {
+    sender: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", required: true },
+    receiver: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", required: true },
+    text: { type: String, required: true },
+    imageUrl: { type: String, default: "" },
+  },
+  { timestamps: true }
+);
+const Message = mongoose.model("Message", messageSchema);
+
 module.exports = {
   Admin,
   Category,
   CategoryQuantity,
   Participant,
   BlacklistedToken,
+  RefreshToken,
   QrImage,
+  Message,
 };

@@ -12,21 +12,36 @@ const {
 
 const router = express.Router();
 
-// Get Selected Category (User)
+// Get Selected Categories (User) - returns all active sessions as a feed
 router.get("/api/user/category", async (req, res) => {
   try {
-    const category = await Category.findOne({ is_selected: true });
-    if (!category) {
+    const categories = await Category.find({ is_selected: true })
+      .populate("created_by", "username")
+      .sort({ createdAt: -1 });
+
+    if (!categories.length) {
       return sendResponse(res, 200, req.t("no_selected_date"), null);
     }
-    const quantity = await CategoryQuantity.findOne({
-      category_id: category._id,
+
+    const categoryIds = categories.map((c) => c._id);
+    const quantities = await CategoryQuantity.find({
+      category_id: { $in: categoryIds },
     });
-    const syncedQuantity = await syncCategoryQuantity(category._id, quantity || null);
-    sendResponse(res, 200, req.t("get_selected_success"), {
-      ...applyLanguage(category.toObject(), req.language),
-      quantity: syncedQuantity || quantity || null,
-    });
+    const quantityMap = {};
+    for (const q of quantities) quantityMap[q.category_id.toString()] = q;
+
+    const result = await Promise.all(
+      categories.map(async (category) => {
+        const quantity = quantityMap[category._id.toString()] || null;
+        const syncedQuantity = await syncCategoryQuantity(category._id, quantity);
+        return {
+          ...applyLanguage(category.toObject(), req.language),
+          quantity: syncedQuantity || quantity || null,
+        };
+      })
+    );
+
+    sendResponse(res, 200, req.t("get_selected_success"), result);
   } catch (err) {
     sendResponse(res, 500, req.t("server_error"), null);
   }
@@ -35,9 +50,9 @@ router.get("/api/user/category", async (req, res) => {
 // List All Categories (User) - public
 router.get("/api/user/categories", async (req, res) => {
   try {
-    const categories = await Category.find({ isShowMoney: true }).sort({
-      createdAt: -1,
-    });
+    const categories = await Category.find({ isShowMoney: true })
+      .populate("created_by", "username")
+      .sort({ createdAt: -1 });
 
     const categoryIds = categories.map((c) => c._id);
     const quantities = await CategoryQuantity.find({
@@ -91,6 +106,10 @@ router.post("/api/participants", async (req, res) => {
     const category = await Category.findById(categoryId);
     if (!category) {
       return sendResponse(res, 404, req.t("no_event_found"));
+    }
+
+    if (!category.is_selected) {
+      return sendResponse(res, 400, req.t("category_not_selected"), null);
     }
 
     // Atomic slot check-and-decrement for "tham gia" submissions with gender
